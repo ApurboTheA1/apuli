@@ -341,7 +341,27 @@ function renderSettingsPanel(data) {
 
   $("setUserName").value = cfg.user_name || "";
   $("setCompanionName").value = cfg.companion_name || "";
-  $("setVaultPath").value = cfg.vault_path || "";
+  $("switchVaultInput").value = cfg.vault_path || "";
+  $("activeVaultSubtitle").textContent = cfg.vault_path
+    ? `Currently active: ${cfg.vault_path}`
+    : "No vault connected yet — enter a path or click Browse…";
+
+  const quickVaults = Array.from(
+    new Set([...(cfg.recent_vaults || []), ...(data.candidate_vaults || [])])
+  ).filter((p) => p && p.toLowerCase() !== (cfg.vault_path || "").toLowerCase());
+  $("vaultQuickChips").innerHTML = quickVaults.length
+    ? `<span class="muted small" style="align-self:center;">Quick switch:</span>` +
+      quickVaults
+        .map(
+          (p) =>
+            `<button type="button" class="mini-btn quick-vault-btn" data-path="${escapeHtml(p)}">${escapeHtml(p)}</button>`
+        )
+        .join("")
+    : "";
+  $("vaultQuickChips").querySelectorAll(".quick-vault-btn").forEach((btn) => {
+    btn.onclick = () => switchVaultTo(btn.dataset.path);
+  });
+
   $("setOllamaUrl").value = cfg.ollama_url || "";
   $("setEmbedModel").value = cfg.embedding_model || "";
   $("setTemp").value = cfg.temperature ?? 0.65;
@@ -889,6 +909,21 @@ function switchView(name) {
   if (name === "settings") loadStatus();
 }
 
+async function switchVaultTo(pathStr) {
+  const clean = (pathStr || "").trim();
+  if (!clean) return showToast("Please enter or select a vault folder path.");
+  try {
+    await api("/api/vault/switch", {
+      method: "POST",
+      body: JSON.stringify({ vault_path: clean }),
+    });
+    showToast("Active vault switched! Processing new vault in the background.");
+    await loadStatus();
+  } catch (err) {
+    showToast(`Could not switch vault: ${err.message}`);
+  }
+}
+
 function bindEvents() {
   document.querySelectorAll(".nav-tab").forEach((tab) => {
     tab.onclick = () => switchView(tab.dataset.view);
@@ -904,6 +939,20 @@ function bindEvents() {
   document.querySelectorAll(".starter-btn").forEach((btn) => {
     btn.onclick = () => sendMessage(btn.dataset.prompt);
   });
+
+  $("onboardBrowseBtn").onclick = async () => {
+    const res = await api("/api/vault/browse", { method: "POST" });
+    if (res.path) $("onboardVault").value = res.path;
+    else if (!res.supported) showToast("Folder dialog unavailable here — please paste the path.");
+  };
+
+  $("browseVaultBtn").onclick = async () => {
+    const res = await api("/api/vault/browse", { method: "POST" });
+    if (res.path) $("switchVaultInput").value = res.path;
+    else if (!res.supported) showToast("Folder dialog unavailable here — please paste the path.");
+  };
+
+  $("switchVaultBtn").onclick = () => switchVaultTo($("switchVaultInput").value);
 
   $("onboardingForm").onsubmit = async (e) => {
     e.preventDefault();
@@ -1072,7 +1121,6 @@ function bindEvents() {
       body: JSON.stringify({
         user_name: $("setUserName").value.trim(),
         companion_name: $("setCompanionName").value.trim(),
-        vault_path: $("setVaultPath").value.trim(),
         ollama_url: $("setOllamaUrl").value.trim(),
         provider: $("setProvider").value,
         chat_model: $("setChatModel").value,

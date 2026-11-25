@@ -310,6 +310,10 @@ class ExportReflectionReq(BaseModel):
     subfolder: str = "Personal"
 
 
+class SwitchVaultReq(BaseModel):
+    vault_path: str
+
+
 def _obsidian_uri(vault_path: str, note_rel_path: str) -> str:
     if not vault_path:
         return "#"
@@ -397,6 +401,79 @@ async def get_status():
     }
 
 
+def _record_recent_vault(cfg: AppConfig, path_str: str) -> None:
+    if not path_str:
+        return
+    norm = str(Path(path_str))
+    existing = [p for p in cfg.recent_vaults if p.lower() != norm.lower()]
+    cfg.recent_vaults = [norm, *existing][:6]
+
+
+def _apply_vault_switch(cfg: AppConfig, old_vault: str) -> None:
+    global _index_task, _deep_task, _deep_status
+    if _deep_task and not _deep_task.done():
+        _deep_task.cancel()
+    if _index_task and not _index_task.done():
+        _index_task.cancel()
+    if old_vault:
+        clear_vault_data(DB_PATH)
+        retriever.reload_vectors()
+        indexer._refresh_stats()
+    _deep_status = {
+        "state": "idle",
+        "notes_processed": 0,
+        "total_notes": 0,
+        "message": "",
+        "updated_at": None,
+    }
+    _record_recent_vault(cfg, cfg.vault_path)
+    save_config(cfg)
+    if cfg.vault_path and Path(cfg.vault_path).exists():
+        indexer.start_watcher(asyncio.get_running_loop())
+        _index_task = asyncio.create_task(
+            _run_vault_pipeline(force_reembed=False, run_deep=True)
+        )
+
+
+@app.post("/api/vault/browse")
+async def api_browse_vault():
+    """Open native OS folder picker dialog locally so user can pick an Obsidian vault."""
+    def _pick() -> dict:
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            selected = filedialog.askdirectory(title="Select Obsidian Vault Folder")
+            root.destroy()
+            return {"supported": True, "path": selected or ""}
+        except Exception as exc:
+            return {"supported": False, "path": "", "error": str(exc)}
+
+    return await asyncio.to_thread(_pick)
+
+
+@app.post("/api/vault/switch")
+async def api_switch_vault(req: SwitchVaultReq):
+    """Switch the active Obsidian vault, clear old vault index, and process in background."""
+    target = req.vault_path.strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="Vault path cannot be empty")
+    target_path = Path(target)
+    if not target_path.exists() or not target_path.is_dir():
+        raise HTTPException(status_code=400, detail=f"Folder not found: {target}")
+
+    cfg = load_config()
+    old_vault = cfg.vault_path
+    cfg.vault_path = str(target_path)
+    if old_vault and Path(old_vault) != target_path:
+        _record_recent_vault(cfg, old_vault)
+    _apply_vault_switch(cfg, old_vault)
+    return {"config": cfg.to_public_dict(), "switched": True}
+
+
 @app.post("/api/settings")
 async def update_settings(payload: SettingsUpdate):
     cfg = load_config()
@@ -404,6 +481,12 @@ async def update_settings(payload: SettingsUpdate):
     old_excluded = list(cfg.excluded_folders)
 
     updates = payload.model_dump(exclude_none=True)
+    if "vault_path" in updates:
+        vp = str(updates["vault_path"]).strip()
+        if vp and (not Path(vp).exists() or not Path(vp).is_dir()):
+            raise HTTPException(status_code=400, detail=f"Vault folder not found: {vp}")
+        updates["vault_path"] = vp
+
     secret_fields = ("openai_api_key", "anthropic_api_key", "gemini_api_key", "custom_api_key")
     for sf in secret_fields:
         if sf in updates:
@@ -425,35 +508,23 @@ async def update_settings(payload: SettingsUpdate):
     for k, v in updates.items():
         if hasattr(cfg, k):
             setattr(cfg, k, v)
+    if cfg.vault_path:
+        _record_recent_vault(cfg, cfg.vault_path)
     save_config(cfg)
 
-    global _index_task, _deep_task, _deep_status
+    global _index_task
     vault_switched = bool(cfg.vault_path and cfg.vault_path != old_vault)
     folders_changed = sorted(cfg.excluded_folders) != sorted(old_excluded)
 
-    if vault_switched or folders_changed:
-        if vault_switched:
-            if _deep_task and not _deep_task.done():
-                _deep_task.cancel()
-            if _index_task and not _index_task.done():
-                _index_task.cancel()
-            if old_vault:
-                clear_vault_data(DB_PATH)
-                retriever.reload_vectors()
-                indexer._refresh_stats()
-            _deep_status = {
-                "state": "idle",
-                "notes_processed": 0,
-                "total_notes": 0,
-                "message": "",
-                "updated_at": None,
-            }
-
-        if cfg.vault_path and Path(cfg.vault_path).exists():
-            indexer.start_watcher(asyncio.get_running_loop())
-            _index_task = asyncio.create_task(
-                _run_vault_pipeline(force_reembed=False, run_deep=vault_switched)
-            )
+    if vault_switched:
+        if old_vault:
+            _record_recent_vault(cfg, old_vault)
+        _apply_vault_switch(cfg, old_vault)
+    elif folders_changed and cfg.vault_path and Path(cfg.vault_path).exists():
+        indexer.start_watcher(asyncio.get_running_loop())
+        _index_task = asyncio.create_task(
+            _run_vault_pipeline(force_reembed=False, run_deep=False)
+        )
 
     return {"config": cfg.to_public_dict()}
 

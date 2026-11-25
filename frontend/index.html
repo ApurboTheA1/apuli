@@ -100,7 +100,10 @@
               </label>
               <label>
                 <span>Obsidian Vault Folder Path</span>
-                <input type="text" id="onboardVault" placeholder="e.g., C:\Users\You\Documents\Obsidian" required />
+                <div style="display:flex; gap:8px;">
+                  <input type="text" id="onboardVault" placeholder="e.g., C:\Users\You\Documents\Obsidian" required style="flex:1;" />
+                  <button type="button" class="btn-ghost" id="onboardBrowseBtn">Browse…</button>
+                </div>
               </label>
               <label>
                 <span>Journal / Daily Notes Folder (optional — prioritized for learning you)</span>
@@ -226,8 +229,25 @@
           <div class="page-header">
             <div>
               <h2>Vault, Hardware &amp; AI Models</h2>
-              <p class="muted">Local-first with Ollama by default. Optionally connect frontier APIs when you want extra horsepower.</p>
+              <p class="muted">Switch your active Obsidian vault, configure privacy &amp; journals, or manage local and cloud AI models.</p>
             </div>
+          </div>
+
+          <!-- Active Vault Switcher Panel -->
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>Active Obsidian Vault</h3>
+                <p class="muted small" id="activeVaultSubtitle">No vault connected yet.</p>
+              </div>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+              <input type="text" id="switchVaultInput" placeholder="Path to Obsidian vault folder…" style="flex:1; min-width:260px;" />
+              <button type="button" class="btn-ghost" id="browseVaultBtn">Browse…</button>
+              <button type="button" class="btn-primary" id="switchVaultBtn">Switch Active Vault</button>
+            </div>
+            <div id="vaultQuickChips" class="candidate-vaults" style="margin-top:10px;"></div>
+            <p class="muted small" style="margin:8px 0 0;">Switching vaults clears the previous vault’s search index and starts indexing the new vault in the background.</p>
           </div>
 
           <!-- Hardware Advisor Panel -->
@@ -276,10 +296,6 @@
               <label>
                 <span>Companion Name</span>
                 <input type="text" id="setCompanionName" />
-              </label>
-              <label>
-                <span>Obsidian Vault Path</span>
-                <input type="text" id="setVaultPath" />
               </label>
               <label>
                 <span>Ollama URL (Local Primary)</span>

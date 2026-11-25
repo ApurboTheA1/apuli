@@ -439,3 +439,42 @@ def test_journal_folders_discovery_scope_and_deep_priority(tmp_path: Path, monke
     assert events[-1]["stage"] == "done"
     assert any("personal journal / periodic reflection entry" in p for p in seen)
     assert any("CORE JOURNAL & PERIODIC REFLECTIONS" in p for p in seen)
+
+
+def test_vault_switch_endpoint_validation_and_recent_vaults(tmp_path: Path, monkeypatch):
+    from backend import app as app_mod
+
+    vault_a = tmp_path / "VaultA"
+    vault_b = tmp_path / "VaultB"
+    vault_a.mkdir()
+    vault_b.mkdir()
+    (vault_b / "hello.md").write_text("# Hello B", encoding="utf-8")
+
+    db_file = tmp_path / "switch.db"
+    init_db(db_file)
+    state_cfg = AppConfig(vault_path=str(vault_a), ollama_url="http://127.0.0.1:59999")
+
+    def fake_load():
+        return state_cfg
+
+    def fake_save(new_cfg):
+        nonlocal state_cfg
+        state_cfg = new_cfg
+        return new_cfg
+
+    monkeypatch.setattr(app_mod, "DB_PATH", db_file)
+    monkeypatch.setattr(app_mod, "load_config", fake_load)
+    monkeypatch.setattr(app_mod, "save_config", fake_save)
+    monkeypatch.setattr(app_mod.indexer, "_db_path", db_file)
+    monkeypatch.setattr(app_mod.retriever, "_db_path", db_file)
+
+    with TestClient(app_mod.app) as client:
+        bad = client.post("/api/vault/switch", json={"vault_path": str(tmp_path / "Missing")})
+        assert bad.status_code == 400
+
+        ok = client.post("/api/vault/switch", json={"vault_path": str(vault_b)})
+        assert ok.status_code == 200
+        cfg_data = ok.json()["config"]
+        assert cfg_data["vault_path"] == str(vault_b)
+        assert str(vault_a) in cfg_data["recent_vaults"]
+        assert str(vault_b) in cfg_data["recent_vaults"]

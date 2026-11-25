@@ -33,6 +33,7 @@ class AppConfig:
     embedding_model: str = "nomic-embed-text"
     excluded_folders: List[str] = field(default_factory=list)
     journal_folders: List[str] = field(default_factory=list)
+    recent_vaults: List[str] = field(default_factory=list)
     user_name: str = "Friend"
     companion_name: str = "Apuli"
     default_mode: str = "companion"
