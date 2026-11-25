@@ -286,3 +286,50 @@ def test_memory_model_override_used_for_distillation(tmp_path: Path, monkeypatch
     cfg = AppConfig(chat_model="dolphin-llama3:8b", memory_model="qwen2.5:7b")
     asyncio.run(memory_mod.distill_memories_from_conversation("c1", cfg, db_path=db_file))
     assert seen_models == ["qwen2.5:7b"]
+
+
+def test_deep_whole_vault_synthesis(tmp_path: Path, monkeypatch):
+    from backend import memory as memory_mod
+    from backend.db import get_self_profile
+
+    vault = tmp_path / "Obsidian"
+    (vault / "Personal").mkdir(parents=True)
+    for i, dt in enumerate(["2024-01-10", "2024-06-15", "2025-03-01", "2026-02-20"], start=1):
+        (vault / "Personal" / f"note_{i}.md").write_text(
+            f"---\ndate: {dt}\n---\n# Entry {i}\nReflecting on growth chapter {i}.",
+            encoding="utf-8",
+        )
+
+    db_file = tmp_path / "deep.db"
+    init_db(db_file)
+    cfg = AppConfig(vault_path=str(vault), ollama_url="http://127.0.0.1:59999")
+    indexer = VaultIndexer(lambda: cfg, db_path=db_file)
+    asyncio.run(indexer.index_vault())
+
+    prompts_seen = []
+
+    async def fake_provider_chat_once(cfg_arg, model_spec, messages, temperature=0.3):
+        prompts_seen.append(messages[0]["content"])
+        if "Chronological Vault Synthesis" in messages[0]["content"]:
+            return "### Core Identity & Values\nConsistent growth across 2024–2026."
+        return "- Growth noted across period."
+
+    monkeypatch.setattr(memory_mod, "provider_chat_once", fake_provider_chat_once)
+
+    async def run_stream():
+        events = []
+        async for ev in memory_mod.deep_synthesize_self_profile_stream(cfg, db_path=db_file):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(run_stream())
+    assert events[-1]["stage"] == "done"
+    assert events[-1]["total_notes"] == 4
+    # Verify chronological order appeared in map prompt
+    map_prompt = prompts_seen[0]
+    assert map_prompt.index("2024-01-10") < map_prompt.index("2026-02-20")
+
+    stored = get_self_profile(db_file)
+    assert stored is not None
+    assert stored["is_deep"] == 1
+    assert stored["notes_covered"] == 4

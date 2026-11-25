@@ -156,7 +156,9 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 summary_md TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL,
                 note_count_snapshot INTEGER NOT NULL DEFAULT 0,
-                memory_count_snapshot INTEGER NOT NULL DEFAULT 0
+                memory_count_snapshot INTEGER NOT NULL DEFAULT 0,
+                notes_covered INTEGER NOT NULL DEFAULT 0,
+                is_deep INTEGER NOT NULL DEFAULT 0
             );
             """
         )
@@ -169,6 +171,12 @@ def init_db(db_path: Path = DB_PATH) -> None:
         )
         _ensure_column(
             conn, "self_profile", "memory_count_snapshot", "INTEGER NOT NULL DEFAULT 0"
+        )
+        _ensure_column(
+            conn, "self_profile", "notes_covered", "INTEGER NOT NULL DEFAULT 0"
+        )
+        _ensure_column(
+            conn, "self_profile", "is_deep", "INTEGER NOT NULL DEFAULT 0"
         )
 
 
@@ -226,7 +234,8 @@ def get_self_profile(db_path: Path = DB_PATH) -> Optional[Dict[str, Any]]:
     with db_session(db_path) as conn:
         row = conn.execute(
             """
-            SELECT summary_md, updated_at, note_count_snapshot, memory_count_snapshot
+            SELECT summary_md, updated_at, note_count_snapshot, memory_count_snapshot,
+                   notes_covered, is_deep
             FROM self_profile WHERE id = 1
             """
         ).fetchone()

@@ -693,6 +693,15 @@ async function sendMessage(text) {
 
 /* --- Mirror & Memories --- */
 
+function updateProfileMeta(profile) {
+  if (!profile || !profile.updated_at) return;
+  const scopeLabel = profile.is_deep
+    ? `Full Vault (${profile.notes_covered || profile.note_count_snapshot || 0} notes)`
+    : `Recent Sample (${profile.notes_covered || "top"} notes)`;
+  $("profileUpdatedAt").textContent =
+    `Last updated: ${new Date(profile.updated_at).toLocaleString()} · ${scopeLabel}`;
+}
+
 async function loadMirrorAndMemories() {
   const [profRes, memRes] = await Promise.all([
     api("/api/self-profile"),
@@ -703,7 +712,7 @@ async function loadMirrorAndMemories() {
 
   if (state.profile && state.profile.summary_md) {
     $("profileDisplay").innerHTML = renderMarkdown(state.profile.summary_md);
-    $("profileUpdatedAt").textContent = `Last updated: ${new Date(state.profile.updated_at).toLocaleString()}`;
+    updateProfileMeta(state.profile);
   }
 
   renderMemories();
@@ -842,18 +851,70 @@ function bindEvents() {
 
   $("synthProfileBtn").onclick = async () => {
     $("synthProfileBtn").disabled = true;
-    $("synthProfileBtn").textContent = "Synthesizing…";
+    $("synthProfileBtn").textContent = "Refreshing…";
     try {
       const res = await api("/api/self-profile/synthesize", { method: "POST" });
       state.profile = res.profile;
       $("profileDisplay").innerHTML = renderMarkdown(res.profile.summary_md);
-      $("profileUpdatedAt").textContent = `Last updated: ${new Date(res.profile.updated_at).toLocaleString()}`;
-      showToast("Self-Portrait updated from your vault.");
+      updateProfileMeta(res.profile);
+      showToast("Self-Portrait refreshed from recent notes.");
     } catch (err) {
       showToast(`Failed: ${err.message}`);
     } finally {
       $("synthProfileBtn").disabled = false;
-      $("synthProfileBtn").textContent = "Generate from Vault";
+      $("synthProfileBtn").textContent = "Quick Refresh";
+    }
+  };
+
+  $("deepSynthBtn").onclick = async () => {
+    const btn = $("deepSynthBtn");
+    const prog = $("deepSynthProgress");
+    btn.disabled = true;
+    $("synthProfileBtn").disabled = true;
+    prog.classList.remove("hidden");
+    prog.textContent = "Preparing chronological read of your entire vault…";
+
+    try {
+      const res = await fetch("/api/self-profile/deep-synthesize", { method: "POST" });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop();
+
+        for (const ev of events) {
+          const lines = ev.split("\n");
+          let type = "message";
+          let payload = "";
+          for (const l of lines) {
+            if (l.startsWith("event:")) type = l.slice(6).trim();
+            if (l.startsWith("data:")) payload += l.slice(5).trim();
+          }
+          if (!payload) continue;
+          const parsed = JSON.parse(payload);
+          if (type === "progress") {
+            prog.textContent = parsed.message || "Reading vault…";
+          } else if (type === "done") {
+            state.profile = parsed.profile;
+            $("profileDisplay").innerHTML = renderMarkdown(parsed.profile.summary_md);
+            updateProfileMeta(parsed.profile);
+            prog.textContent = `Complete — synthesized across all ${parsed.total_notes} notes.`;
+            showToast(`Deep Self-Portrait built from ${parsed.total_notes} notes!`);
+          } else if (type === "error") {
+            prog.textContent = `Error: ${parsed.error}`;
+          }
+        }
+      }
+    } catch (err) {
+      prog.textContent = `Failed: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+      $("synthProfileBtn").disabled = false;
     }
   };
 

@@ -1,4 +1,4 @@
-"""Personal companion prompts, auto-distilled memory, and evolving self-portrait."""
+"""Personal companion prompts, auto-distilled memory, and whole-vault evolving self-portrait."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .config import AppConfig, DB_PATH
 from .db import (
@@ -254,7 +254,7 @@ async def synthesize_self_profile(
     model: Optional[str] = None,
     db_path: Path = DB_PATH,
 ) -> Dict[str, object]:
-    """Synthesize or evolve the 'Who I Am' self-portrait from Personal/People notes & memories."""
+    """Quickly synthesize or evolve the 'Who I Am' self-portrait from recent notes & memories."""
     async with _profile_lock:
         existing_profile = get_self_profile(db_path)
         with db_session(db_path) as conn:
@@ -295,7 +295,7 @@ async def synthesize_self_profile(
         prev_block = ""
         if existing_profile and existing_profile.get("summary_md"):
             prev_block = (
-                "Previous Self-Portrait (evolve and refine this rather than discarding important enduring truths):\n"
+                "Previous Self-Portrait (evolve and refine this rather than discarding enduring truths):\n"
                 + existing_profile["summary_md"].strip()
                 + "\n\n"
             )
@@ -311,7 +311,7 @@ async def synthesize_self_profile(
             "Be honest and grounded strictly in the provided text; if something isn't clear yet, leave room for discovery.\n\n"
             f"{prev_block}"
             f"Saved Memories:\n{mem_block or '(none yet)'}\n\n"
-            "Note Samples:\n" + ("\n".join(samples) if samples else "(no notes indexed yet)")
+            "Recent Note Samples:\n" + ("\n".join(samples) if samples else "(no notes indexed yet)")
         )
 
         used_model = model or cfg.memory_model or cfg.chat_model
@@ -322,26 +322,238 @@ async def synthesize_self_profile(
             temperature=0.35,
         )
         now = utc_now_iso()
+        was_deep = int(existing_profile.get("is_deep") or 0) if existing_profile else 0
+        prev_covered = int(existing_profile.get("notes_covered") or 0) if existing_profile else 0
+        notes_covered = max(prev_covered, len(rows)) if was_deep else len(rows)
+
         with db_session(db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO self_profile (
-                    id, summary_md, updated_at, note_count_snapshot, memory_count_snapshot
+                    id, summary_md, updated_at, note_count_snapshot,
+                    memory_count_snapshot, notes_covered, is_deep
                 )
-                VALUES (1, ?, ?, ?, ?)
+                VALUES (1, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     summary_md = excluded.summary_md,
                     updated_at = excluded.updated_at,
                     note_count_snapshot = excluded.note_count_snapshot,
-                    memory_count_snapshot = excluded.memory_count_snapshot
+                    memory_count_snapshot = excluded.memory_count_snapshot,
+                    notes_covered = excluded.notes_covered,
+                    is_deep = excluded.is_deep
                 """,
-                (summary, now, note_count, mem_count),
+                (summary, now, note_count, mem_count, notes_covered, was_deep),
             )
         return {
             "summary_md": summary,
             "updated_at": now,
             "note_count_snapshot": note_count,
             "memory_count_snapshot": mem_count,
+            "notes_covered": notes_covered,
+            "is_deep": was_deep,
+        }
+
+
+def _load_chronological_notes(db_path: Path) -> List[Dict[str, str]]:
+    with db_session(db_path) as conn:
+        notes_rows = conn.execute(
+            """
+            SELECT path, title, folder, note_date
+            FROM notes
+            ORDER BY COALESCE(note_date, '9999-99-99') ASC, mtime ASC
+            """
+        ).fetchall()
+        chunk_rows = conn.execute(
+            """
+            SELECT note_path, content
+            FROM chunks
+            ORDER BY note_path, chunk_index ASC
+            """
+        ).fetchall()
+
+    text_by_path: Dict[str, List[str]] = {}
+    for ch in chunk_rows:
+        buf = text_by_path.setdefault(ch["note_path"], [])
+        if sum(len(x) for x in buf) < 950:
+            buf.append(ch["content"])
+
+    out: List[Dict[str, str]] = []
+    for nr in notes_rows:
+        joined = "\n".join(text_by_path.get(nr["path"], []))[:950].strip()
+        if not joined:
+            continue
+        out.append(
+            {
+                "path": nr["path"],
+                "title": nr["title"],
+                "folder": nr["folder"],
+                "note_date": nr["note_date"] or "undated",
+                "text": joined,
+            }
+        )
+    return out
+
+
+def _batch_notes(
+    notes: List[Dict[str, str]], max_chars: int = 6200, max_items: int = 12
+) -> List[List[Dict[str, str]]]:
+    batches: List[List[Dict[str, str]]] = []
+    cur: List[Dict[str, str]] = []
+    cur_chars = 0
+    for n in notes:
+        entry_len = len(n["text"]) + len(n["path"]) + 40
+        if cur and (len(cur) >= max_items or cur_chars + entry_len > max_chars):
+            batches.append(cur)
+            cur = []
+            cur_chars = 0
+        cur.append(n)
+        cur_chars += entry_len
+    if cur:
+        batches.append(cur)
+    return batches
+
+
+async def deep_synthesize_self_profile_stream(
+    cfg: AppConfig,
+    model: Optional[str] = None,
+    db_path: Path = DB_PATH,
+) -> AsyncIterator[Dict[str, Any]]:
+    """
+    Chronologically walk through EVERY indexed note in the vault using map-reduce,
+    yielding live progress updates and saving a deep Self-Portrait.
+    """
+    async with _profile_lock:
+        used_model = model or cfg.memory_model or cfg.chat_model
+        all_notes = _load_chronological_notes(db_path)
+        total_notes = len(all_notes)
+
+        if total_notes == 0:
+            yield {"stage": "error", "error": "No indexed notes found in the vault yet."}
+            return
+
+        batches = _batch_notes(all_notes)
+        total_batches = len(batches)
+        batch_digests: List[str] = []
+        processed = 0
+
+        for idx, batch in enumerate(batches, start=1):
+            processed += len(batch)
+            first_date = batch[0]["note_date"]
+            last_date = batch[-1]["note_date"]
+            yield {
+                "stage": "reading",
+                "batch": idx,
+                "total_batches": total_batches,
+                "notes_processed": processed,
+                "total_notes": total_notes,
+                "message": f"Reading notes {processed}/{total_notes} ({first_date} → {last_date})…",
+            }
+
+            entries = [
+                f"- [{n['note_date']}] {n['path']}:\n  {n['text']}"
+                for n in batch
+            ]
+            map_prompt = (
+                f"You are analyzing chronological Obsidian notes by {cfg.user_name} ({first_date} to {last_date}).\n"
+                "Extract 4–7 concise bullet points capturing what these notes reveal about them as a person: "
+                "values, emotional state, struggles, personal growth, key relationships, creative/life projects, and worldview.\n"
+                "Skip generic class/textbook definitions unless they reflect personal interest.\n"
+                "Stay strictly grounded in the text.\n\n"
+                + "\n\n".join(entries)
+            )
+            digest = await provider_chat_once(
+                cfg, used_model, [{"role": "user", "content": map_prompt}], temperature=0.25
+            )
+            batch_digests.append(f"[{first_date} to {last_date}]\n{digest}")
+
+        # Hierarchical reduce if many batches accumulated
+        working = batch_digests
+        round_num = 1
+        while len(working) > 10:
+            yield {
+                "stage": "reducing",
+                "notes_processed": total_notes,
+                "total_notes": total_notes,
+                "message": f"Weaving life chapters together (pass {round_num}, {len(working)} sections)…",
+            }
+            next_level: List[str] = []
+            for i in range(0, len(working), 8):
+                group = working[i : i + 8]
+                fold_prompt = (
+                    f"Consolidate these chronological insights about {cfg.user_name} into one cohesive chapter summary "
+                    "(8–12 concise bullets preserving specific people, themes, turning points, and emotional evolution):\n\n"
+                    + "\n\n---\n\n".join(group)
+                )
+                folded = await provider_chat_once(
+                    cfg, used_model, [{"role": "user", "content": fold_prompt}], temperature=0.25
+                )
+                next_level.append(folded)
+            working = next_level
+            round_num += 1
+
+        yield {
+            "stage": "reducing",
+            "notes_processed": total_notes,
+            "total_notes": total_notes,
+            "message": f"Writing final Self-Portrait from all {total_notes} notes…",
+        }
+
+        memories = get_memories(db_path)
+        mem_block = "\n".join(
+            f"- ({m['category']}) {m['content']}" for m in memories[:25]
+        )
+
+        final_prompt = (
+            f"Based on this complete chronological synthesis of {total_notes} Obsidian notes and saved memories for {cfg.user_name}, "
+            "write a deeply personal, honest, grounded Self-Portrait in Markdown (~450–650 words) to help them remember themselves.\n"
+            "Use these exact sections:\n"
+            "### Core Identity & Values\n"
+            "### Your Story & How You've Evolved\n"
+            "### Active Threads, Projects & Curiosities\n"
+            "### Recurring Patterns & Inner Tensions\n"
+            "### People & Anchors\n\n"
+            "Be warm, specific, and faithful to the evidence across their timeline — never invent facts.\n\n"
+            f"Saved Memories:\n{mem_block or '(none yet)'}\n\n"
+            "Chronological Vault Synthesis:\n" + "\n\n---\n\n".join(working)
+        )
+
+        summary = await provider_chat_once(
+            cfg, used_model, [{"role": "user", "content": final_prompt}], temperature=0.35
+        )
+        now = utc_now_iso()
+        with db_session(db_path) as conn:
+            note_count = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+            mem_count = len(memories)
+            conn.execute(
+                """
+                INSERT INTO self_profile (
+                    id, summary_md, updated_at, note_count_snapshot,
+                    memory_count_snapshot, notes_covered, is_deep
+                )
+                VALUES (1, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(id) DO UPDATE SET
+                    summary_md = excluded.summary_md,
+                    updated_at = excluded.updated_at,
+                    note_count_snapshot = excluded.note_count_snapshot,
+                    memory_count_snapshot = excluded.memory_count_snapshot,
+                    notes_covered = excluded.notes_covered,
+                    is_deep = 1
+                """,
+                (summary, now, note_count, mem_count, total_notes),
+            )
+
+        yield {
+            "stage": "done",
+            "notes_processed": total_notes,
+            "total_notes": total_notes,
+            "profile": {
+                "summary_md": summary,
+                "updated_at": now,
+                "note_count_snapshot": note_count,
+                "memory_count_snapshot": mem_count,
+                "notes_covered": total_notes,
+                "is_deep": 1,
+            },
         }
 
 
@@ -370,7 +582,6 @@ async def maybe_evolve_self_profile(
     if not profile or not profile.get("summary_md"):
         return await synthesize_self_profile(cfg, db_path=db_path)
 
-    # Check cooldown
     try:
         prev_dt = datetime.fromisoformat(profile["updated_at"])
         elapsed = (datetime.now(timezone.utc) - prev_dt).total_seconds()
@@ -379,9 +590,15 @@ async def maybe_evolve_self_profile(
     except Exception:
         pass
 
+    with db_session(db_path) as conn:
+        edited_since = conn.execute(
+            "SELECT COUNT(*) FROM notes WHERE indexed_at > ?",
+            (profile["updated_at"],),
+        ).fetchone()[0]
+
     prev_notes = int(profile.get("note_count_snapshot") or 0)
     prev_mems = int(profile.get("memory_count_snapshot") or 0)
-    if (mem_count - prev_mems) >= 4 or abs(note_count - prev_notes) >= 10:
+    if (mem_count - prev_mems) >= 4 or abs(note_count - prev_notes) >= 10 or edited_since >= 8:
         return await synthesize_self_profile(cfg, db_path=db_path)
 
     return None

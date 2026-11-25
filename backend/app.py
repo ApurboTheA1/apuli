@@ -29,6 +29,7 @@ from .hardware import detect_hardware, recommend_models
 from .indexer import VaultIndexer, discover_vault_folders
 from .memory import (
     build_system_prompt,
+    deep_synthesize_self_profile_stream,
     distill_memories_from_conversation,
     maybe_auto_distill,
     maybe_evolve_self_profile,
@@ -662,6 +663,26 @@ async def api_synthesize_self_profile():
         return {"profile": profile}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Synthesis failed: {exc}")
+
+
+@app.post("/api/self-profile/deep-synthesize")
+async def api_deep_synthesize_self_profile():
+    cfg = load_config()
+
+    async def stream():
+        try:
+            async for item in deep_synthesize_self_profile_stream(cfg, db_path=DB_PATH):
+                stage = item.get("stage", "reading")
+                if stage == "done":
+                    yield _sse_event("done", item)
+                elif stage == "error":
+                    yield _sse_event("error", item)
+                else:
+                    yield _sse_event("progress", item)
+        except Exception as exc:
+            yield _sse_event("error", {"error": str(exc)})
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 @app.put("/api/self-profile")

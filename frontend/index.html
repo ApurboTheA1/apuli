@@ -160,11 +160,13 @@
               </div>
               <div class="panel-actions">
                 <button class="btn-ghost" id="editProfileBtn">Edit</button>
-                <button class="btn-primary" id="synthProfileBtn">Generate from Vault</button>
+                <button class="btn-ghost" id="synthProfileBtn" title="Fast refresh using your 22 newest notes">Quick Refresh</button>
+                <button class="btn-primary" id="deepSynthBtn" title="Read every indexed note chronologically across your entire vault">Deep Read Whole Vault</button>
               </div>
             </div>
+            <div id="deepSynthProgress" class="embed-box hidden" style="margin-bottom: 12px;"></div>
             <div id="profileDisplay" class="markdown-body profile-body">
-              <p class="muted">Click <strong>Generate from Vault</strong> to let your model read your recent notes and reflect back a grounded portrait of who you are right now.</p>
+              <p class="muted">Click <strong>Deep Read Whole Vault</strong> to let Apuli walk through all of your notes chronologically and build a complete Self-Portrait, or <strong>Quick Refresh</strong> for a fast snapshot from recent notes.</p>
             </div>
             <div id="profileEditorWrap" class="hidden">
               <textarea id="profileEditor" class="code-textarea" rows="12"></textarea>
