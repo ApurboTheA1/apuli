@@ -74,7 +74,7 @@ async def embed_texts(
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 f"{url}/api/embed",
-                json={"model": model, "input": safe_texts},
+                json={"model": model, "input": safe_texts, "keep_alive": "20m"},
             )
             if resp.status_code == 404:
                 # Fallback for older Ollama versions supporting /api/embeddings
@@ -82,7 +82,7 @@ async def embed_texts(
                 for item in safe_texts:
                     r2 = await client.post(
                         f"{url}/api/embeddings",
-                        json={"model": model, "prompt": item},
+                        json={"model": model, "prompt": item, "keep_alive": "20m"},
                     )
                     r2.raise_for_status()
                     vectors.append(r2.json()["embedding"])
@@ -132,6 +132,7 @@ async def chat_stream(
         "model": model,
         "messages": messages,
         "stream": True,
+        "keep_alive": "20m",
         "options": {
             "temperature": temperature,
             "num_ctx": 8192,
@@ -213,6 +214,7 @@ async def chat_once(
         "model": model,
         "messages": messages,
         "stream": False,
+        "keep_alive": "20m",
         "options": {"temperature": temperature, "num_ctx": num_ctx},
     }
     async with httpx.AsyncClient(timeout=180.0) as client:

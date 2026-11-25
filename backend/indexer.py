@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
@@ -296,47 +298,52 @@ class VaultIndexer:
             embed_ready = await has_model(cfg.ollama_url, cfg.embedding_model)
             self.status.state = "indexing"
 
-            changed_notes: List[ParsedNote] = []
-            for idx, file_path in enumerate(all_md, start=1):
+            to_parse: List[Tuple[Path, Optional[Tuple[float, str]]]] = []
+            for file_path in all_md:
                 rel_posix = file_path.relative_to(vault_root).as_posix()
-                self.status.current_file = rel_posix
-                self.status.processed_notes = idx
-
                 prev = existing.get(rel_posix)
                 stat = file_path.stat()
                 if not force_reembed and prev and abs(prev[0] - stat.st_mtime) < 1e-4:
                     continue
+                to_parse.append((file_path, prev))
 
-                parsed = parse_obsidian_note(file_path, vault_root)
-                if not force_reembed and prev and prev[1] == parsed.content_hash:
-                    # Update mtime only
-                    with db_session(self._db_path) as conn:
-                        conn.execute(
-                            "UPDATE notes SET mtime = ? WHERE path = ?",
-                            (parsed.mtime, parsed.rel_path),
-                        )
-                    continue
+            changed_notes: List[ParsedNote] = []
+            mtime_only_updates: List[Tuple[float, str]] = []
+            if to_parse:
+                workers = min(16, max(4, (os.cpu_count() or 4) * 2))
+                self.status.message = f"Parsing {len(to_parse)} notes across {workers} CPU threads..."
+                loop = asyncio.get_running_loop()
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    parsed_results = await loop.run_in_executor(
+                        None,
+                        lambda: list(
+                            pool.map(lambda item: parse_obsidian_note(item[0], vault_root), to_parse)
+                        ),
+                    )
+                for idx, ((_, prev), parsed) in enumerate(zip(to_parse, parsed_results), start=1):
+                    self.status.processed_notes = idx
+                    self.status.current_file = parsed.rel_path
+                    if not force_reembed and prev and prev[1] == parsed.content_hash:
+                        mtime_only_updates.append((parsed.mtime, parsed.rel_path))
+                    else:
+                        changed_notes.append(parsed)
 
-                changed_notes.append(parsed)
+            if mtime_only_updates:
+                with db_session(self._db_path) as conn:
+                    conn.executemany(
+                        "UPDATE notes SET mtime = ? WHERE path = ?",
+                        mtime_only_updates,
+                    )
 
             if changed_notes:
                 self.status.message = f"Indexing {len(changed_notes)} updated notes..."
                 for i, parsed in enumerate(changed_notes, start=1):
                     self.status.current_file = parsed.rel_path
-                    embeddings = None
-                    if embed_ready:
-                        chunk_inputs = [
-                            f"Note: {parsed.title} ({parsed.folder})\nSection: {c.heading}\n\n{c.content}"
-                            for c in parsed.chunks
-                        ]
-                        embeddings = await embed_texts(
-                            cfg.ollama_url, cfg.embedding_model, chunk_inputs
-                        )
-                    self._upsert_note_sync(parsed, embeddings, cfg.embedding_model)
-                    if i % 10 == 0:
+                    self._upsert_note_sync(parsed, None, cfg.embedding_model)
+                    if i % 25 == 0:
                         self._refresh_stats()
 
-            # Also embed any chunks that still lack embeddings if embedding model is now ready
+            # Embed all unembedded chunks in 48-chunk cross-note batches
             if embed_ready:
                 await self._embed_missing_chunks(cfg)
 
@@ -373,7 +380,7 @@ class VaultIndexer:
             return
 
         self.status.state = "embedding"
-        batch_size = 16
+        batch_size = 48
         for i in range(0, len(pending), batch_size):
             batch = pending[i : i + batch_size]
             self.status.message = (
