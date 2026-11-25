@@ -66,6 +66,42 @@ def discover_vault_folders(vault_path: Path) -> List[Dict[str, object]]:
     return folders
 
 
+def discover_journal_candidates(vault_path: Path) -> List[Dict[str, object]]:
+    """List folders & depth-2 subfolders containing markdown notes, flagging likely journal folders."""
+    if not vault_path.exists():
+        return []
+    hidden = {d.lower() for d in SYSTEM_EXCLUDED_DIRS}
+    hints = ("journal", "daily", "weekly", "monthly", "yearly", "diary", "reflection", "log")
+    results: List[Dict[str, object]] = []
+
+    for top in sorted(vault_path.iterdir(), key=lambda p: p.name.lower()):
+        if not top.is_dir() or top.name.startswith(".") or top.name.lower() in hidden:
+            continue
+        top_count = sum(1 for _ in top.rglob("*.md"))
+        if top_count > 0:
+            results.append(
+                {
+                    "path": top.name,
+                    "note_count": top_count,
+                    "suggested": any(h in top.name.lower() for h in hints),
+                }
+            )
+        for sub in sorted(top.iterdir(), key=lambda p: p.name.lower()):
+            if not sub.is_dir() or sub.name.startswith(".") or sub.name.lower() in hidden:
+                continue
+            sub_count = sum(1 for _ in sub.rglob("*.md"))
+            if sub_count > 0:
+                rel = f"{top.name}/{sub.name}"
+                results.append(
+                    {
+                        "path": rel,
+                        "note_count": sub_count,
+                        "suggested": any(h in rel.lower() for h in hints),
+                    }
+                )
+    return results
+
+
 def _vec_to_blob(vec: List[float]) -> bytes:
     arr = np.asarray(vec, dtype=np.float32)
     norm = np.linalg.norm(arr)

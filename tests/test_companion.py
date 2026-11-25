@@ -380,3 +380,62 @@ def test_status_exposes_deep_status():
         prof = client.get("/api/self-profile")
         assert prof.status_code == 200
         assert "digested_notes" in prof.json()
+
+
+def test_journal_folders_discovery_scope_and_deep_priority(tmp_path: Path, monkeypatch):
+    from backend import memory as memory_mod
+    from backend.indexer import discover_journal_candidates
+
+    vault = tmp_path / "Obsidian"
+    (vault / "Personal" / "Journal").mkdir(parents=True)
+    (vault / "College").mkdir(parents=True)
+
+    (vault / "Personal" / "Journal" / "2026-01-01.md").write_text(
+        "# New Year\nThinking deeply about creativity and family.", encoding="utf-8"
+    )
+    (vault / "College" / "Lecture1.md").write_text(
+        "# Lecture 1\nCreativity and family sociology lecture definitions.", encoding="utf-8"
+    )
+
+    cands = discover_journal_candidates(vault)
+    journal_cand = next(c for c in cands if c["path"] == "Personal/Journal")
+    assert journal_cand["suggested"] is True
+    assert journal_cand["note_count"] == 1
+
+    db_file = tmp_path / "journal.db"
+    init_db(db_file)
+    cfg = AppConfig(
+        vault_path=str(vault),
+        journal_folders=["Personal/Journal"],
+        ollama_url="http://127.0.0.1:59999",
+    )
+    indexer = VaultIndexer(lambda: cfg, db_path=db_file)
+    asyncio.run(indexer.index_vault())
+
+    retriever = HybridRetriever(db_path=db_file)
+    journal_only = asyncio.run(
+        retriever.retrieve("creativity family", cfg, folder_scope="journal")
+    )
+    assert [h.note_path for h in journal_only] == ["Personal/Journal/2026-01-01.md"]
+
+    seen = []
+
+    async def fake_chat_once(cfg_arg, model_spec, messages, temperature=0.3):
+        p = messages[0]["content"]
+        seen.append(p)
+        if "CORE JOURNAL & PERIODIC REFLECTIONS" in p:
+            return "### Core Identity & Values\nDeeply grounded in journals."
+        return "- Values creativity and family."
+
+    monkeypatch.setattr(memory_mod, "provider_chat_once", fake_chat_once)
+
+    async def run_deep():
+        out = []
+        async for ev in memory_mod.deep_synthesize_self_profile_stream(cfg, db_path=db_file):
+            out.append(ev)
+        return out
+
+    events = asyncio.run(run_deep())
+    assert events[-1]["stage"] == "done"
+    assert any("personal journal / periodic reflection entry" in p for p in seen)
+    assert any("CORE JOURNAL & PERIODIC REFLECTIONS" in p for p in seen)

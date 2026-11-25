@@ -32,6 +32,7 @@ class AppConfig:
     memory_model: str = ""  # Optional dedicated model for memory distillation & self-portrait
     embedding_model: str = "nomic-embed-text"
     excluded_folders: List[str] = field(default_factory=list)
+    journal_folders: List[str] = field(default_factory=list)
     user_name: str = "Friend"
     companion_name: str = "Apuli"
     default_mode: str = "companion"
@@ -94,3 +95,15 @@ def save_config(cfg: AppConfig) -> AppConfig:
         encoding="utf-8",
     )
     return cfg
+
+
+def is_in_folders(note_rel_path: str, folders: List[str]) -> bool:
+    """Return True if a relative note path lives inside any listed folder/subfolder."""
+    if not folders:
+        return False
+    norm = note_rel_path.replace("\\", "/").strip("/").lower()
+    for f in folders:
+        clean = f.replace("\\", "/").strip("/").lower()
+        if clean and (norm == clean or norm.startswith(clean + "/")):
+            return True
+    return False

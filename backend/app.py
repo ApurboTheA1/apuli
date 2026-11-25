@@ -27,7 +27,7 @@ from .db import (
     utc_now_iso,
 )
 from .hardware import detect_hardware, recommend_models
-from .indexer import VaultIndexer, discover_vault_folders
+from .indexer import VaultIndexer, discover_journal_candidates, discover_vault_folders
 from .memory import (
     build_system_prompt,
     deep_synthesize_self_profile_stream,
@@ -245,6 +245,7 @@ class SettingsUpdate(BaseModel):
     memory_model: Optional[str] = None
     embedding_model: Optional[str] = None
     excluded_folders: Optional[List[str]] = None
+    journal_folders: Optional[List[str]] = None
     user_name: Optional[str] = None
     companion_name: Optional[str] = None
     default_mode: Optional[str] = None
@@ -349,6 +350,11 @@ async def get_status():
         if vault_path and vault_path.exists()
         else []
     )
+    journal_candidates = (
+        discover_journal_candidates(vault_path)
+        if vault_path and vault_path.exists()
+        else []
+    )
 
     with db_session(DB_PATH) as conn:
         folder_counts = [
@@ -382,6 +388,7 @@ async def get_status():
         "index_status": indexer.status.to_dict(),
         "deep_status": _deep_status,
         "vault_folders": vault_folders,
+        "journal_candidates": journal_candidates,
         "indexed_folders": folder_counts,
         "recent_notes": recent_notes,
         "memory_count": memory_count,

@@ -267,8 +267,12 @@ async function loadStatus() {
   // Folder scope selector
   const scopeSelect = $("folderScopeSelect");
   const prevScope = scopeSelect.value || "all";
+  const journalOpt = (cfg.journal_folders || []).length
+    ? [`<option value="journal">⭐ Journal (${escapeHtml(cfg.journal_folders.join(", "))})</option>`]
+    : [];
   const folderOptions = [
     `<option value="all">All Indexed Folders</option>`,
+    ...journalOpt,
     ...data.indexed_folders.map(
       (f) => `<option value="${escapeHtml(f.folder)}">${escapeHtml(f.folder)} (${f.count})</option>`
     ),
@@ -403,6 +407,41 @@ function renderSettingsPanel(data) {
         })
         .join("")
     : `<div class="muted small">Connect a vault path first to configure folder privacy.</div>`;
+
+  // Journal folder picker (supports nested paths like Personal/Journal)
+  const journalSet = new Set((cfg.journal_folders || []).map((f) => f.toLowerCase()));
+  const jCands = data.journal_candidates || [];
+  const jMatchedPaths = new Set(jCands.map((c) => c.path.toLowerCase()));
+  const customJournals = (cfg.journal_folders || []).filter(
+    (f) => !jMatchedPaths.has(f.toLowerCase())
+  );
+  $("setJournalCustom").value = customJournals.join(", ");
+
+  const orderedCands = [...jCands].sort((a, b) => {
+    const aSel = journalSet.has(a.path.toLowerCase()) ? 1 : 0;
+    const bSel = journalSet.has(b.path.toLowerCase()) ? 1 : 0;
+    if (aSel !== bSel) return bSel - aSel;
+    if (!!a.suggested !== !!b.suggested) return a.suggested ? -1 : 1;
+    return a.path.localeCompare(b.path);
+  });
+
+  $("journalChecks").innerHTML = orderedCands.length
+    ? orderedCands
+        .map((c) => {
+          const checked = journalSet.has(c.path.toLowerCase());
+          const badge = c.suggested ? ` <span class="hw-badge">Suggested</span>` : "";
+          return `
+            <div class="folder-check-item">
+              <label>
+                <input type="checkbox" class="journal-toggle" data-folder="${escapeHtml(c.path)}" ${checked ? "checked" : ""} />
+                <span>${escapeHtml(c.path)}${badge}</span>
+              </label>
+              <span class="muted small">${c.note_count} notes</span>
+            </div>
+          `;
+        })
+        .join("")
+    : `<div class="muted small">Connect a vault first to pick journal folders.</div>`;
 }
 
 async function pullOllamaModel(modelName, progressEl, btn) {
@@ -870,10 +909,14 @@ function bindEvents() {
     e.preventDefault();
     const user_name = $("onboardName").value.trim() || "Friend";
     const vault_path = $("onboardVault").value.trim();
+    const journal_raw = $("onboardJournal").value.trim();
+    const journal_folders = journal_raw
+      ? journal_raw.split(",").map((s) => s.trim()).filter(Boolean)
+      : [];
     if (!vault_path) return;
     await api("/api/settings", {
       method: "POST",
-      body: JSON.stringify({ user_name, vault_path }),
+      body: JSON.stringify({ user_name, vault_path, journal_folders }),
     });
     $("onboardingCard").classList.add("hidden");
     $("welcomeCard").classList.remove("hidden");
@@ -1015,6 +1058,15 @@ function bindEvents() {
     document.querySelectorAll(".folder-toggle").forEach((cb) => {
       if (!cb.checked) excluded.push(cb.dataset.folder);
     });
+    const journalSet = new Set();
+    document.querySelectorAll(".journal-toggle").forEach((cb) => {
+      if (cb.checked) journalSet.add(cb.dataset.folder);
+    });
+    ($("setJournalCustom").value || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .forEach((p) => journalSet.add(p));
     await api("/api/settings", {
       method: "POST",
       body: JSON.stringify({
@@ -1042,6 +1094,7 @@ function bindEvents() {
         custom_api_key: $("setCustomKey").value.trim(),
         custom_model: $("setCustomModel").value.trim(),
         excluded_folders: excluded,
+        journal_folders: Array.from(journalSet),
       }),
     });
     $("settingsSavedMsg").textContent = "Saved!";

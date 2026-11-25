@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from .config import AppConfig, DB_PATH
+from .config import AppConfig, DB_PATH, is_in_folders
 from .db import (
     db_session,
     get_conversation_messages,
@@ -259,26 +259,25 @@ async def synthesize_self_profile(
         existing_profile = get_self_profile(db_path)
         with db_session(db_path) as conn:
             note_count = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
-            rows = conn.execute(
+            all_rows = conn.execute(
                 """
                 SELECT n.path, n.title, n.folder, n.note_date, c.content
                 FROM notes n
                 JOIN chunks c ON c.note_path = n.path AND c.chunk_index = 0
-                WHERE n.folder IN ('Personal', 'People', 'Media', 'Inbox')
                 ORDER BY COALESCE(n.note_date, '') DESC, n.mtime DESC
-                LIMIT 22
+                LIMIT 120
                 """
             ).fetchall()
-            if not rows:
-                rows = conn.execute(
-                    """
-                    SELECT n.path, n.title, n.folder, n.note_date, c.content
-                    FROM notes n
-                    JOIN chunks c ON c.note_path = n.path AND c.chunk_index = 0
-                    ORDER BY COALESCE(n.note_date, '') DESC, n.mtime DESC
-                    LIMIT 20
-                    """
-                ).fetchall()
+
+        journal_rows = [r for r in all_rows if is_in_folders(r["path"], cfg.journal_folders)][:16]
+        seen_paths = {r["path"] for r in journal_rows}
+        other_rows = [
+            r for r in all_rows
+            if r["path"] not in seen_paths and r["folder"] in ("Personal", "People", "Media", "Inbox")
+        ][:12]
+        if not journal_rows and not other_rows:
+            other_rows = list(all_rows[:20])
+        rows = journal_rows + other_rows
 
         memories = get_memories(db_path)
         mem_count = len(memories)
@@ -395,6 +394,7 @@ async def _digest_single_note(
     cfg: AppConfig,
     used_model: str,
     db_path: Path,
+    is_journal: bool = False,
 ) -> Tuple[str, int]:
     """Read an entire single note (across all its segments) and store its cached digest."""
     segments = _load_note_segments(note["path"], db_path)
@@ -406,22 +406,34 @@ async def _digest_single_note(
         part_summaries: List[str] = []
         for idx, seg in enumerate(segments, start=1):
             part_label = f" (Part {idx}/{len(segments)})" if len(segments) > 1 else ""
-            prompt = (
-                f"Read this Obsidian note written by {cfg.user_name}:\n"
-                f"Path: {note['path']} | Date: {note['note_date']} | Folder: {note['folder']}{part_label}\n\n"
-                f"{seg}\n\n"
-                "Task:\n"
-                "- If this note contains anything personal (thoughts, feelings, self-reflection, values, struggles, "
-                "relationships, life events, decisions, or creative/podcast ideas), write 2–5 concise, specific bullet points "
-                f"capturing what it reveals about {cfg.user_name}.\n"
-                "- If it is purely generic reference material (raw lecture notes, textbook definitions, code, or bare links) "
-                "with zero personal insight, reply with exactly: REFERENCE_ONLY"
-            )
+            if is_journal:
+                prompt = (
+                    f"Read this personal journal / periodic reflection entry by {cfg.user_name}:\n"
+                    f"Path: {note['path']} | Date: {note['note_date']}{part_label}\n\n"
+                    f"{seg}\n\n"
+                    "Task:\n"
+                    "- Because this is a personal journal/daily/periodic note, pay close attention to emotional tone, "
+                    "inner voice, values, turning points, people mentioned, struggles, and recurring patterns.\n"
+                    "- Write 3–6 concise, specific bullet points capturing what this entry reveals about "
+                    f"{cfg.user_name}. Stay strictly grounded in the text."
+                )
+            else:
+                prompt = (
+                    f"Read this Obsidian note written by {cfg.user_name}:\n"
+                    f"Path: {note['path']} | Date: {note['note_date']} | Folder: {note['folder']}{part_label}\n\n"
+                    f"{seg}\n\n"
+                    "Task:\n"
+                    "- If this note contains anything personal (thoughts, feelings, self-reflection, values, struggles, "
+                    "relationships, life events, decisions, or creative/podcast ideas), write 2–5 concise, specific bullet points "
+                    f"capturing what it reveals about {cfg.user_name}.\n"
+                    "- If it is purely generic reference material (raw lecture notes, textbook definitions, code, or bare links) "
+                    "with zero personal insight, reply with exactly: REFERENCE_ONLY"
+                )
             resp = await provider_chat_once(
                 cfg, used_model, [{"role": "user", "content": prompt}], temperature=0.2
             )
             cleaned = resp.strip()
-            if cleaned and "REFERENCE_ONLY" not in cleaned.upper():
+            if cleaned and (is_journal or "REFERENCE_ONLY" not in cleaned.upper()):
                 part_summaries.append(cleaned)
 
         if not part_summaries:
@@ -517,11 +529,12 @@ async def deep_synthesize_self_profile_stream(
         to_digest = []
         reused = 0
         for n in notes_list:
+            is_j = is_in_folders(n["path"], cfg.journal_folders)
             cached = cached_map.get(n["path"])
-            if cached and cached["content_hash"] == n["content_hash"]:
+            if cached and cached["content_hash"] == n["content_hash"] and not (is_j and cached["is_personal"] == 0):
                 reused += 1
             else:
-                to_digest.append(n)
+                to_digest.append((n, is_j))
 
         if reused > 0:
             yield {
@@ -533,19 +546,20 @@ async def deep_synthesize_self_profile_stream(
             }
 
         processed = reused
-        for n in to_digest:
+        for n, is_j in to_digest:
             processed += 1
+            tag = "★ Journal" if is_j else n["folder"]
             yield {
                 "stage": "reading",
                 "notes_processed": processed,
                 "total_notes": total_notes,
                 "cached_notes": reused,
                 "current_note": n["path"],
-                "message": f"Reading note {processed}/{total_notes} ({n['note_date']}) · {n['path']}",
+                "message": f"Reading {processed}/{total_notes} ({tag} · {n['note_date']}) · {n['path']}",
             }
-            await _digest_single_note(n, cfg, used_model, db_path)
+            await _digest_single_note(n, cfg, used_model, db_path, is_journal=is_j)
 
-        # Gather all digested insights chronologically
+        # Gather all digested insights chronologically, separating Journal Gold vs Supporting Vault
         with db_session(db_path) as conn:
             digest_rows = conn.execute(
                 """
@@ -556,53 +570,80 @@ async def deep_synthesize_self_profile_stream(
                 """
             ).fetchall()
 
-        personal_entries = [
+        journal_entries = [
             f"[{r['note_date'] or 'undated'}] {r['note_path']}:\n{r['digest']}"
             for r in digest_rows
-            if r["is_personal"] == 1 and r["digest"] and r["digest"] != "REFERENCE_ONLY"
+            if is_in_folders(r["note_path"], cfg.journal_folders)
+            and r["digest"]
+            and r["digest"] != "REFERENCE_ONLY"
         ]
-        if not personal_entries:
-            personal_entries = [
+        other_entries = [
+            f"[{r['note_date'] or 'undated'}] {r['note_path']}:\n{r['digest']}"
+            for r in digest_rows
+            if not is_in_folders(r["note_path"], cfg.journal_folders)
+            and r["is_personal"] == 1
+            and r["digest"]
+            and r["digest"] != "REFERENCE_ONLY"
+        ]
+        if not journal_entries and not other_entries:
+            other_entries = [
                 f"[{r['note_date'] or 'undated'}] {r['note_path']} ({r['folder']})"
                 for r in digest_rows
             ]
 
-        # Hierarchically fold digests in character-safe groups so local 7B/8B context never overflows
-        working = personal_entries
-        round_num = 1
-        while len(working) > 14 or sum(len(x) for x in working) > 7500:
+        async def _fold_list(entries: List[str], label: str, target_max_chars: int = 4200) -> List[str]:
+            working = entries
+            round_num = 1
+            while len(working) > 10 or sum(len(x) for x in working) > target_max_chars:
+                groups: List[List[str]] = []
+                cur_g: List[str] = []
+                cur_len = 0
+                for item in working:
+                    if cur_g and (len(cur_g) >= 12 or cur_len + len(item) > 5500):
+                        groups.append(cur_g)
+                        cur_g = []
+                        cur_len = 0
+                    cur_g.append(item)
+                    cur_len += len(item) + 2
+                if cur_g:
+                    groups.append(cur_g)
+
+                next_level: List[str] = []
+                for g in groups:
+                    fold_prompt = (
+                        f"Consolidate these chronological {label} insights about {cfg.user_name} into one cohesive chapter summary "
+                        "(6–10 concise bullets preserving specific people, dates, turning points, struggles, and values):\n\n"
+                        + "\n\n---\n\n".join(g)
+                    )
+                    folded = await provider_chat_once(
+                        cfg, used_model, [{"role": "user", "content": fold_prompt}], temperature=0.25
+                    )
+                    next_level.append(folded)
+                working = next_level
+                round_num += 1
+            return working
+
+        if journal_entries:
             yield {
                 "stage": "reducing",
                 "notes_processed": total_notes,
                 "total_notes": total_notes,
-                "message": f"Synthesizing life chapters (pass {round_num} across {len(working)} insights)…",
+                "message": f"Synthesizing journal chapters ({len(journal_entries)} journal entries)…",
             }
-            groups: List[List[str]] = []
-            cur_g: List[str] = []
-            cur_len = 0
-            for item in working:
-                if cur_g and (len(cur_g) >= 14 or cur_len + len(item) > 5800):
-                    groups.append(cur_g)
-                    cur_g = []
-                    cur_len = 0
-                cur_g.append(item)
-                cur_len += len(item) + 2
-            if cur_g:
-                groups.append(cur_g)
+            folded_journals = await _fold_list(journal_entries, "journal & reflection", target_max_chars=4800)
+        else:
+            folded_journals = []
 
-            next_level: List[str] = []
-            for g in groups:
-                fold_prompt = (
-                    f"Consolidate these chronological personal insights about {cfg.user_name} into one cohesive chapter summary "
-                    "(6–10 concise bullets preserving specific people, dates, turning points, struggles, and values):\n\n"
-                    + "\n\n---\n\n".join(g)
-                )
-                folded = await provider_chat_once(
-                    cfg, used_model, [{"role": "user", "content": fold_prompt}], temperature=0.25
-                )
-                next_level.append(folded)
-            working = next_level
-            round_num += 1
+        if other_entries:
+            yield {
+                "stage": "reducing",
+                "notes_processed": total_notes,
+                "total_notes": total_notes,
+                "message": f"Integrating supporting vault context ({len(other_entries)} notes)…",
+            }
+            folded_others = await _fold_list(other_entries, "vault", target_max_chars=2600)
+        else:
+            folded_others = []
 
         yield {
             "stage": "reducing",
@@ -616,9 +657,23 @@ async def deep_synthesize_self_profile_stream(
             f"- ({m['category']}) {m['content']}" for m in memories[:25]
         )
 
+        synthesis_sections = []
+        if folded_journals:
+            synthesis_sections.append(
+                "=== CORE JOURNAL & PERIODIC REFLECTIONS (Primary Grounding) ===\n"
+                + "\n\n---\n\n".join(folded_journals)
+            )
+        if folded_others:
+            synthesis_sections.append(
+                "=== SUPPORTING VAULT CONTEXT (People, Projects, Media & Study) ===\n"
+                + "\n\n---\n\n".join(folded_others)
+            )
+
         final_prompt = (
             f"Based on this complete note-by-note chronological synthesis of all {total_notes} Obsidian notes and saved memories for {cfg.user_name}, "
             "write a deeply personal, honest, grounded Self-Portrait in Markdown (~450–650 words) to help them remember themselves.\n"
+            "Give highest weight to their Core Journal & Periodic Reflections as the truest window into their inner life, "
+            "while weaving in their people, projects, and broader interests from the rest of the vault.\n"
             "Use these exact sections:\n"
             "### Core Identity & Values\n"
             "### Your Story & How You've Evolved\n"
@@ -627,7 +682,7 @@ async def deep_synthesize_self_profile_stream(
             "### People & Anchors\n\n"
             "Be warm, specific, and faithful to the evidence across their timeline — never invent facts.\n\n"
             f"Saved Memories:\n{mem_block or '(none yet)'}\n\n"
-            "Chronological Vault Synthesis:\n" + "\n\n---\n\n".join(working)
+            + "\n\n".join(synthesis_sections)
         )
 
         summary = await provider_chat_once(

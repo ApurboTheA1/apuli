@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .config import AppConfig, DB_PATH
+from .config import AppConfig, DB_PATH, is_in_folders
 from .db import db_session
 from .ollama_client import embed_texts, has_model
 
@@ -75,6 +75,7 @@ class HybridRetriever:
         self._db_path = db_path
         self._chunk_ids: List[int] = []
         self._chunk_folders: List[str] = []
+        self._chunk_paths: List[str] = []
         self._matrix: Optional[np.ndarray] = None
         self._dim: int = 0
 
@@ -89,7 +90,7 @@ class HybridRetriever:
         with db_session(self._db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT c.id, c.embedding, c.embedding_dim, n.folder
+                SELECT c.id, c.embedding, c.embedding_dim, n.folder, n.path
                 FROM chunks c
                 JOIN notes n ON n.path = c.note_path
                 WHERE c.embedding IS NOT NULL AND c.embedding_dim > 0
@@ -111,6 +112,7 @@ class HybridRetriever:
             dim = rows[-1]["embedding_dim"]
             ids: List[int] = []
             folders: List[str] = []
+            paths: List[str] = []
             vecs: List[np.ndarray] = []
             for r in rows:
                 if r["embedding_dim"] != dim:
@@ -119,16 +121,18 @@ class HybridRetriever:
                 if arr.shape[0] == dim:
                     ids.append(r["id"])
                     folders.append(r["folder"])
+                    paths.append(r["path"])
                     vecs.append(arr)
             if vecs:
                 self._chunk_ids = ids
                 self._chunk_folders = folders
+                self._chunk_paths = paths
                 self._matrix = np.vstack(vecs)
                 self._dim = dim
             else:
-                self._chunk_ids, self._chunk_folders, self._matrix, self._dim = [], [], None, 0
+                self._chunk_ids, self._chunk_folders, self._chunk_paths, self._matrix, self._dim = [], [], [], None, 0
         else:
-            self._chunk_ids, self._chunk_folders, self._matrix, self._dim = [], [], None, 0
+            self._chunk_ids, self._chunk_folders, self._chunk_paths, self._matrix, self._dim = [], [], [], None, 0
 
         # Past chat vectors
         if chat_rows:
@@ -170,22 +174,41 @@ class HybridRetriever:
                 clean.append(f'"{t}"')
         return " OR ".join(clean[:12])
 
+    def _scope_sql(
+        self, folder_scope: str, journal_folders: Optional[List[str]] = None
+    ) -> Tuple[str, List[object]]:
+        if not folder_scope or folder_scope == "all":
+            return "", []
+        if folder_scope == "journal":
+            jfolders = [f.replace("\\", "/").strip("/") for f in (journal_folders or []) if f.strip()]
+            if not jfolders:
+                return "", []
+            clauses = []
+            params: List[object] = []
+            for jf in jfolders:
+                clauses.append("(LOWER(n.path) = LOWER(?) OR LOWER(n.path) LIKE LOWER(?))")
+                params.extend([jf, f"{jf}/%"])
+            return "(" + " OR ".join(clauses) + ")", params
+        folders = [f.strip() for f in folder_scope.split(",") if f.strip()]
+        if not folders:
+            return "", []
+        placeholders = ",".join("?" for _ in folders)
+        return f"n.folder IN ({placeholders})", list(folders)
+
     def _fts_search(
-        self, query: str, folder_scope: str, limit: int = 24
+        self,
+        query: str,
+        folder_scope: str,
+        limit: int = 24,
+        journal_folders: Optional[List[str]] = None,
     ) -> List[Tuple[int, float]]:
         fts_query = self._build_fts_query(query)
         if not fts_query:
             return []
 
-        params: List[object] = [fts_query]
-        folder_clause = ""
-        if folder_scope and folder_scope != "all":
-            folders = [f.strip() for f in folder_scope.split(",") if f.strip()]
-            if folders:
-                placeholders = ",".join("?" for _ in folders)
-                folder_clause = f"AND n.folder IN ({placeholders})"
-                params.extend(folders)
-        params.append(limit)
+        scope_sql, scope_params = self._scope_sql(folder_scope, journal_folders)
+        folder_clause = f"AND {scope_sql}" if scope_sql else ""
+        params: List[object] = [fts_query, *scope_params, limit]
 
         sql = f"""
             SELECT f.chunk_id, bm25(chunks_fts, 1.0, 3.0, 1.5, 2.0, 2.0, 1.0) AS rank
@@ -203,7 +226,11 @@ class HybridRetriever:
                 return []
 
     def _vector_search(
-        self, query_vec: List[float], folder_scope: str, limit: int = 24
+        self,
+        query_vec: List[float],
+        folder_scope: str,
+        limit: int = 24,
+        journal_folders: Optional[List[str]] = None,
     ) -> List[Tuple[int, float]]:
         if self._matrix is None or len(query_vec) != self._dim:
             return []
@@ -215,7 +242,12 @@ class HybridRetriever:
 
         sims = self._matrix @ q
 
-        if folder_scope and folder_scope != "all":
+        if folder_scope == "journal" and journal_folders:
+            mask = np.array(
+                [is_in_folders(p, journal_folders) for p in self._chunk_paths], dtype=bool
+            )
+            sims = np.where(mask, sims, -1.0)
+        elif folder_scope and folder_scope != "all":
             allowed = {f.strip().lower() for f in folder_scope.split(",") if f.strip()}
             mask = np.array(
                 [f.lower() in allowed for f in self._chunk_folders], dtype=bool
@@ -236,17 +268,14 @@ class HybridRetriever:
         return results
 
     def _recent_chunks(
-        self, folder_scope: str, limit: int = 8
+        self,
+        folder_scope: str,
+        limit: int = 8,
+        journal_folders: Optional[List[str]] = None,
     ) -> List[int]:
-        params: List[object] = []
-        folder_clause = ""
-        if folder_scope and folder_scope != "all":
-            folders = [f.strip() for f in folder_scope.split(",") if f.strip()]
-            if folders:
-                placeholders = ",".join("?" for _ in folders)
-                folder_clause = f"WHERE n.folder IN ({placeholders})"
-                params.extend(folders)
-        params.append(limit)
+        scope_sql, scope_params = self._scope_sql(folder_scope, journal_folders)
+        folder_clause = f"WHERE {scope_sql}" if scope_sql else ""
+        params: List[object] = [*scope_params, limit]
         with db_session(self._db_path) as conn:
             rows = conn.execute(
                 f"""
@@ -552,7 +581,9 @@ class HybridRetriever:
         top_k: Optional[int] = None,
     ) -> List[RetrievedChunk]:
         k = top_k or cfg.top_k_chunks
-        fts_hits = self._fts_search(query, folder_scope, limit=24)
+        fts_hits = self._fts_search(
+            query, folder_scope, limit=24, journal_folders=cfg.journal_folders
+        )
 
         vec_hits: List[Tuple[int, float]] = []
         if self._matrix is not None and await has_model(
@@ -560,7 +591,9 @@ class HybridRetriever:
         ):
             vecs = await embed_texts(cfg.ollama_url, cfg.embedding_model, [query])
             if vecs:
-                vec_hits = self._vector_search(vecs[0], folder_scope, limit=24)
+                vec_hits = self._vector_search(
+                    vecs[0], folder_scope, limit=24, journal_folders=cfg.journal_folders
+                )
 
         scores: Dict[int, float] = {}
         reasons: Dict[int, List[str]] = {}
@@ -577,7 +610,9 @@ class HybridRetriever:
         lower_q = query.lower()
         wants_recent = any(h in lower_q for h in RECENCY_HINTS)
         if wants_recent or not scores:
-            recent_ids = self._recent_chunks(folder_scope, limit=6)
+            recent_ids = self._recent_chunks(
+                folder_scope, limit=6, journal_folders=cfg.journal_folders
+            )
             for rank, cid in enumerate(recent_ids):
                 boost = 0.8 if not scores else 0.5
                 scores[cid] = scores.get(cid, 0.0) + (boost / (rrf_k + rank + 1))
@@ -597,8 +632,11 @@ class HybridRetriever:
             if not item:
                 continue
             sc = scores[cid]
-            if folder_scope == "all" and item["folder"] in ("Personal", "People"):
-                sc *= 1.12
+            if folder_scope == "all":
+                if is_in_folders(item["note_path"], cfg.journal_folders):
+                    sc *= 1.35
+                elif item["folder"] in ("Personal", "People"):
+                    sc *= 1.12
             if wants_recent and item.get("note_date", "").startswith(str(today_year)):
                 sc *= 1.15
             adjusted.append((cid, sc))

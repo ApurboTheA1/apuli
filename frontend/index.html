@@ -102,6 +102,10 @@
                 <span>Obsidian Vault Folder Path</span>
                 <input type="text" id="onboardVault" placeholder="e.g., C:\Users\You\Documents\Obsidian" required />
               </label>
+              <label>
+                <span>Journal / Daily Notes Folder (optional — prioritized for learning you)</span>
+                <input type="text" id="onboardJournal" placeholder="e.g., Personal/Journal or Daily Notes" />
+              </label>
               <div id="candidateVaultsBox" class="candidate-vaults"></div>
               <div id="onboardHardwareSummary" class="embed-box"></div>
               <button type="submit" class="btn-primary">Connect Vault &amp; Start</button>
@@ -252,9 +256,13 @@
             </div>
 
             <div class="panel">
-              <h3>Folder Privacy</h3>
-              <p class="muted small">Only checked folders are indexed. Hidden folders (<code>.obsidian</code>, <code>.trash</code>) are always excluded.</p>
+              <h3>Folder Privacy &amp; Journal Focus</h3>
+              <p class="muted small">Checked folders are indexed. Mark your <strong>Journal / Daily / Periodic</strong> folder(s) below so Apuli gives them the deepest focus while still reading the rest of your vault.</p>
               <div class="folder-checks" id="folderChecks"></div>
+              <h4 style="margin: 14px 0 6px; font-size: 13.5px;">⭐ Journal &amp; Periodic Reflection Folders</h4>
+              <p class="muted small" style="margin: 0 0 8px;">Daily, weekly, monthly, or yearly journal folders (e.g., <code>Personal/Journal</code>).</p>
+              <div class="folder-checks" id="journalChecks" style="max-height: 170px;"></div>
+              <input type="text" id="setJournalCustom" placeholder="Extra journal subfolder paths, comma-separated (e.g., Personal/Journal)" style="width:100%; margin-top:8px;" />
             </div>
           </div>
 
