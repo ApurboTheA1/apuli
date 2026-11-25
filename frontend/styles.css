@@ -1,3 +1,35 @@
+@font-face {
+  font-family: "Iosevka Nerd Font";
+  src: url("/static/fonts/IosevkaNerdFont-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Iosevka Nerd Font";
+  src: url("/static/fonts/IosevkaNerdFont-Medium.ttf") format("truetype");
+  font-weight: 500 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Iosevka Nerd Font";
+  src: url("/static/fonts/IosevkaNerdFont-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Iosevka Nerd Font";
+  src: url("/static/fonts/IosevkaNerdFont-Italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
 :root {
   --bg: #0f1115;
   --bg-elev: #161920;
@@ -12,13 +44,17 @@
   --sage-soft: rgba(122, 184, 155, 0.14);
   --danger: #e07070;
   --radius: 12px;
-  --font-sans: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
-  --font-serif: Georgia, "Times New Roman", serif;
-  --font-mono: Consolas, "Cascadia Code", monospace;
+  --font-sans: "Iosevka Nerd Font", "Iosevka", "Segoe UI", sans-serif;
+  --font-serif: "Iosevka Nerd Font", "Iosevka", Georgia, serif;
+  --font-mono: "Iosevka Nerd Font", "Iosevka", Consolas, monospace;
 }
 
 * {
   box-sizing: border-box;
+}
+
+button, input, textarea, select {
+  font-family: inherit;
 }
 
 html, body {
