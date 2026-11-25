@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
-import sys
+import os
+import string
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -437,40 +437,55 @@ def _apply_vault_switch(cfg: AppConfig, old_vault: str) -> None:
         )
 
 
-@app.post("/api/vault/browse")
-async def api_browse_vault():
-    """Open native OS folder picker dialog in a dedicated subprocess (main-thread safe)."""
-    script = (
-        "import tkinter as tk\n"
-        "from tkinter import filedialog\n"
-        "root = tk.Tk()\n"
-        "root.withdraw()\n"
-        "root.attributes('-topmost', True)\n"
-        "root.update()\n"
-        "p = filedialog.askdirectory(title='Select Obsidian Vault Folder')\n"
-        "root.destroy()\n"
-        "print(p or '', end='')\n"
-    )
+@app.get("/api/vault/fs")
+async def api_browse_fs(path: str = ""):
+    """Browse local directories safely so users can pick an Obsidian vault right in the UI."""
+    home = Path.home()
+    roots: List[Dict[str, str]] = [
+        {"label": "Home", "path": str(home)},
+    ]
+    docs = home / "Documents"
+    if docs.exists():
+        roots.append({"label": "Documents", "path": str(docs)})
+    if os.name == "nt":
+        for letter in string.ascii_uppercase:
+            drive = Path(f"{letter}:\\")
+            if drive.exists():
+                roots.append({"label": f"{letter}:\\", "path": str(drive)})
 
-    def _pick() -> dict:
+    target = Path(path.strip()) if path.strip() else (docs if docs.exists() else home)
+    if not target.exists() or not target.is_dir():
+        target = home
+
+    parent = str(target.parent) if target.parent != target else ""
+    folders: List[Dict[str, Any]] = []
+    try:
+        entries = sorted(target.iterdir(), key=lambda p: p.name.lower())
+    except PermissionError:
+        entries = []
+
+    for item in entries:
         try:
-            proc = subprocess.run(
-                [sys.executable, "-c", script],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if proc.returncode != 0:
-                return {
-                    "supported": False,
-                    "path": "",
-                    "error": proc.stderr.strip() or "Dialog unavailable",
+            if not item.is_dir() or item.name.startswith(".") or item.name.startswith("$"):
+                continue
+            is_vault = (item / ".obsidian").is_dir()
+            folders.append(
+                {
+                    "name": item.name,
+                    "path": str(item),
+                    "is_vault": is_vault,
                 }
-            return {"supported": True, "path": proc.stdout.strip()}
-        except Exception as exc:
-            return {"supported": False, "path": "", "error": str(exc)}
+            )
+        except PermissionError:
+            continue
 
-    return await asyncio.to_thread(_pick)
+    return {
+        "current_path": str(target),
+        "parent_path": parent,
+        "is_current_vault": (target / ".obsidian").is_dir(),
+        "roots": roots,
+        "folders": folders,
+    }
 
 
 @app.post("/api/vault/switch")

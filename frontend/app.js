@@ -909,6 +909,84 @@ function switchView(name) {
   if (name === "settings") loadStatus();
 }
 
+let _folderModalTargetInput = null;
+let _folderModalState = { current_path: "", parent_path: "" };
+
+async function openFolderModal(targetInput) {
+  _folderModalTargetInput = targetInput;
+  $("folderModal").classList.remove("hidden");
+  await navigateFolderModal(targetInput.value.trim());
+}
+
+function closeFolderModal() {
+  $("folderModal").classList.add("hidden");
+  _folderModalTargetInput = null;
+}
+
+async function navigateFolderModal(pathStr = "") {
+  const list = $("folderModalList");
+  list.innerHTML = `<div class="muted small" style="padding:10px;">Loading folders…</div>`;
+  try {
+    const data = await api(`/api/vault/fs?path=${encodeURIComponent(pathStr)}`);
+    _folderModalState = data;
+    $("folderModalPath").value = data.current_path || "";
+    $("folderUpBtn").disabled = !data.parent_path;
+
+    $("folderModalRoots").innerHTML = (data.roots || [])
+      .map(
+        (r) =>
+          `<button type="button" class="mini-btn modal-root-btn" data-path="${escapeHtml(r.path)}">${escapeHtml(r.label)}</button>`
+      )
+      .join("");
+    $("folderModalRoots").querySelectorAll(".modal-root-btn").forEach((b) => {
+      b.onclick = () => navigateFolderModal(b.dataset.path);
+    });
+
+    if (!data.folders || !data.folders.length) {
+      list.innerHTML = `<div class="muted small" style="padding:10px;">No subfolders inside this directory.</div>`;
+      return;
+    }
+
+    list.innerHTML = data.folders
+      .map((f) => {
+        const vaultBadge = f.is_vault
+          ? `<span class="hw-badge ok">◈ Obsidian Vault</span>`
+          : "";
+        const useBtn = f.is_vault
+          ? `<button type="button" class="mini-btn use-vault-row-btn" data-path="${escapeHtml(f.path)}">Select</button>`
+          : "";
+        return `
+          <div class="folder-row" data-path="${escapeHtml(f.path)}">
+            <div class="folder-row-name">📁 ${escapeHtml(f.name)} ${vaultBadge}</div>
+            <div style="display:flex; gap:6px; flex-shrink:0;">
+              ${useBtn}
+              <button type="button" class="mini-btn open-dir-btn" data-path="${escapeHtml(f.path)}">Open →</button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+
+    list.querySelectorAll(".folder-row").forEach((row) => {
+      row.onclick = (e) => {
+        if (e.target.closest("button")) return;
+        navigateFolderModal(row.dataset.path);
+      };
+    });
+    list.querySelectorAll(".open-dir-btn").forEach((b) => {
+      b.onclick = () => navigateFolderModal(b.dataset.path);
+    });
+    list.querySelectorAll(".use-vault-row-btn").forEach((b) => {
+      b.onclick = () => {
+        if (_folderModalTargetInput) _folderModalTargetInput.value = b.dataset.path;
+        closeFolderModal();
+      };
+    });
+  } catch (err) {
+    list.innerHTML = `<div class="muted small" style="padding:10px;">Failed to list folders: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
 async function switchVaultTo(pathStr) {
   const clean = (pathStr || "").trim();
   if (!clean) return showToast("Please enter or select a vault folder path.");
@@ -940,21 +1018,22 @@ function bindEvents() {
     btn.onclick = () => sendMessage(btn.dataset.prompt);
   });
 
-  const handleBrowse = async (targetInput, btn) => {
-    btn.disabled = true;
-    try {
-      const res = await api("/api/vault/browse", { method: "POST" });
-      if (res.path) targetInput.value = res.path;
-      else if (!res.supported) showToast("Folder dialog unavailable here — please paste the path.");
-    } catch (err) {
-      showToast(`Browse failed: ${err.message}. If you updated Apuli, restart start.bat.`);
-    } finally {
-      btn.disabled = false;
-    }
+  $("onboardBrowseBtn").onclick = () => openFolderModal($("onboardVault"));
+  $("browseVaultBtn").onclick = () => openFolderModal($("switchVaultInput"));
+  $("closeFolderModalBtn").onclick = closeFolderModal;
+  $("cancelFolderModalBtn").onclick = closeFolderModal;
+  $("folderUpBtn").onclick = () => {
+    if (_folderModalState.parent_path) navigateFolderModal(_folderModalState.parent_path);
   };
-
-  $("onboardBrowseBtn").onclick = () => handleBrowse($("onboardVault"), $("onboardBrowseBtn"));
-  $("browseVaultBtn").onclick = () => handleBrowse($("switchVaultInput"), $("browseVaultBtn"));
+  $("selectCurrentFolderBtn").onclick = () => {
+    if (_folderModalTargetInput && _folderModalState.current_path) {
+      _folderModalTargetInput.value = _folderModalState.current_path;
+    }
+    closeFolderModal();
+  };
+  $("folderModal").onclick = (e) => {
+    if (e.target === $("folderModal")) closeFolderModal();
+  };
 
   $("switchVaultBtn").onclick = () => switchVaultTo($("switchVaultInput").value);
 

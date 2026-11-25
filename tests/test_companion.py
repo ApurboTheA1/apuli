@@ -478,3 +478,20 @@ def test_vault_switch_endpoint_validation_and_recent_vaults(tmp_path: Path, monk
         assert cfg_data["vault_path"] == str(vault_b)
         assert str(vault_a) in cfg_data["recent_vaults"]
         assert str(vault_b) in cfg_data["recent_vaults"]
+
+
+def test_fs_folder_browser_detects_obsidian_vaults(tmp_path: Path):
+    from backend.app import app
+
+    vault_dir = tmp_path / "MyVault"
+    (vault_dir / ".obsidian").mkdir(parents=True)
+    (tmp_path / "OtherFolder").mkdir()
+
+    with TestClient(app) as client:
+        res = client.get("/api/vault/fs", params={"path": str(tmp_path)})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["current_path"] == str(tmp_path)
+        by_name = {f["name"]: f for f in data["folders"]}
+        assert by_name["MyVault"]["is_vault"] is True
+        assert by_name["OtherFolder"]["is_vault"] is False

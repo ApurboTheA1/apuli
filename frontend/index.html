@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Apuli — Local Obsidian Companion</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=3" />
 </head>
 <body>
   <div class="app-shell">
@@ -402,7 +402,30 @@
     </main>
   </div>
 
+  <!-- In-app Obsidian Folder Picker Modal -->
+  <div class="modal-backdrop hidden" id="folderModal">
+    <div class="modal-card">
+      <div class="panel-header" style="margin-bottom: 10px;">
+        <div>
+          <h3 style="margin:0;">Select Obsidian Vault Folder</h3>
+          <p class="muted small" style="margin:2px 0 0;">Folders containing <code>.obsidian</code> are highlighted.</p>
+        </div>
+        <button type="button" class="mini-btn" id="closeFolderModalBtn">✕</button>
+      </div>
+      <div id="folderModalRoots" class="candidate-vaults" style="margin-bottom: 8px;"></div>
+      <div class="folder-nav-bar">
+        <button type="button" class="btn-ghost" id="folderUpBtn">↑ Up</button>
+        <input type="text" id="folderModalPath" readonly style="flex:1;" />
+      </div>
+      <div class="folder-modal-list" id="folderModalList"></div>
+      <div class="panel-actions right" style="margin-top: 12px;">
+        <button type="button" class="btn-ghost" id="cancelFolderModalBtn">Cancel</button>
+        <button type="button" class="btn-primary" id="selectCurrentFolderBtn">Select This Folder</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>
