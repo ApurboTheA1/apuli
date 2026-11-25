@@ -105,6 +105,9 @@ function updateModelPrivacyHint() {
 const FONT_PRESETS = new Set([
   "system",
   "Source Code Pro",
+  "Literata",
+  "IBM Plex Serif",
+  "Atkinson Hyperlegible",
   "JetBrainsMono Nerd Font",
   "Cascadia Code",
   "Inter",
