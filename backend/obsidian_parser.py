@@ -187,13 +187,19 @@ def _chunk_markdown(
                 start = 0
                 while start < len(para):
                     end = min(start + max_chars, len(para))
+                    if end < len(para):
+                        ws = para.rfind(" ", start + max_chars // 2, end)
+                        if ws > start:
+                            end = ws
                     piece = para[start:end].strip()
                     if piece:
                         chunks.append(ParsedChunk(chunk_index=idx, heading=heading, content=piece))
                         idx += 1
                     if end >= len(para):
                         break
-                    start = max(0, end - overlap_chars)
+                    next_start = max(start + 1, end - overlap_chars)
+                    ws_next = para.find(" ", next_start, end)
+                    start = ws_next + 1 if ws_next != -1 else end
                 continue
 
             candidate = f"{buf}\n\n{para}".strip() if buf else para
@@ -202,8 +208,13 @@ def _chunk_markdown(
             else:
                 chunks.append(ParsedChunk(chunk_index=idx, heading=heading, content=buf.strip()))
                 idx += 1
-                tail = buf[-overlap_chars:] if len(buf) > overlap_chars else buf
-                buf = f"{tail}\n\n{para}".strip()
+                if len(buf) > overlap_chars:
+                    raw_tail = buf[-overlap_chars:]
+                    ws_tail = raw_tail.find(" ")
+                    tail = raw_tail[ws_tail + 1 :].strip() if ws_tail != -1 else raw_tail.strip()
+                else:
+                    tail = buf
+                buf = f"{tail}\n\n{para}".strip() if tail else para
 
         if buf.strip():
             chunks.append(ParsedChunk(chunk_index=idx, heading=heading, content=buf.strip()))

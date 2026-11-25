@@ -25,6 +25,10 @@ STOP_WORDS = {
     "these", "they", "this", "those", "to", "too", "up", "us", "very", "was",
     "we", "were", "what", "when", "where", "which", "who", "why", "will",
     "with", "would", "you", "your", "yourself", "about", "remember", "know",
+    "feel", "feeling", "felt", "think", "thinking", "thought", "life", "day",
+    "time", "thing", "things", "way", "make", "want", "need", "going", "getting",
+    "really", "always", "sometimes", "today", "lot", "lots", "much", "many",
+    "also", "even", "still", "like", "good", "bad", "well", "help", "myself",
 }
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_]{2,}")
@@ -342,6 +346,9 @@ class HybridRetriever:
         for r in rows:
             if r["note_path"] in seen_paths:
                 continue
+            content_clean = (r["content"] or "").strip()
+            if len(content_clean) < 30:
+                continue
             seen_paths.add(r["note_path"])
             linked.append(
                 RetrievedChunk(
@@ -650,6 +657,8 @@ class HybridRetriever:
 
         for cid, sc in adjusted:
             item = details[cid]
+            if len((item.get("content") or "").strip()) < 25:
+                continue
             npath = item["note_path"]
             if per_note_count.get(npath, 0) >= 2:
                 continue
