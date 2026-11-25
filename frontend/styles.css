@@ -931,6 +931,32 @@ html, body {
   transition: width 0.25s ease;
 }
 
+.bg-progress-card {
+  background: var(--bg-card);
+  border: 1px solid rgba(224, 169, 88, 0.35);
+  border-radius: 9px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 11.5px;
+}
+
+.bg-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.bg-progress-msg {
+  color: var(--text-muted);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { display: none; }

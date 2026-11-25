@@ -9,6 +9,7 @@ const state = {
   streaming: false,
   memories: [],
   profile: null,
+  wasDeepActive: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -148,10 +149,14 @@ async function loadStatus() {
     oText.textContent = "Ollama offline (start Ollama)";
   }
 
-  // Index pill
+  // Index pill & unified background progress card
   const iPill = $("indexPill");
   const iText = $("indexPillText");
   const idx = data.index_status;
+  const deep = data.deep_status || { state: "idle" };
+  const deepActive = deep.state === "reading" || deep.state === "reducing";
+  const indexActive = idx.state !== "idle" && idx.state !== "error";
+
   iPill.classList.remove("ok", "warn", "err");
   if (data.needs_onboarding) {
     iPill.classList.add("warn");
@@ -159,14 +164,47 @@ async function loadStatus() {
   } else if (idx.state === "error") {
     iPill.classList.add("err");
     iText.textContent = "Vault index error";
-  } else if (idx.state !== "idle") {
+  } else if (indexActive) {
     iPill.classList.add("warn");
     iText.textContent = idx.message || `Indexing (${idx.processed_notes}/${idx.total_notes})…`;
+  } else if (deepActive) {
+    iPill.classList.add("warn");
+    iText.textContent = `Learning vault (${deep.notes_processed}/${deep.total_notes})…`;
   } else {
     iPill.classList.add("ok");
     const modeTag = idx.embeddings_available ? "semantic+keyword" : "keyword";
     iText.textContent = `${idx.indexed_notes} notes · ${modeTag}`;
   }
+
+  // Sidebar live background progress card (stays visible as user explores)
+  const bgCard = $("bgProgressCard");
+  if (indexActive || deepActive) {
+    bgCard.classList.remove("hidden");
+    if (indexActive) {
+      $("bgProgressLabel").textContent = "Indexing Vault";
+      $("bgProgressMsg").textContent = idx.message || idx.current_file || "Scanning notes…";
+      const pct = idx.total_notes ? Math.round((idx.processed_notes / idx.total_notes) * 100) : 15;
+      $("bgProgressBar").style.width = `${Math.max(8, Math.min(100, pct))}%`;
+      $("bgStopDeepBtn").classList.add("hidden");
+    } else {
+      $("bgProgressLabel").textContent =
+        deep.state === "reducing" ? "Weaving Self-Portrait" : "Learning Notes (1 by 1)";
+      $("bgProgressMsg").textContent = deep.message || "Reading notes…";
+      const pct = deep.total_notes ? Math.round((deep.notes_processed / deep.total_notes) * 100) : 10;
+      $("bgProgressBar").style.width = `${Math.max(4, Math.min(100, pct))}%`;
+      $("bgStopDeepBtn").classList.remove("hidden");
+    }
+  } else {
+    bgCard.classList.add("hidden");
+  }
+
+  // Mirror page deep progress sync
+  syncDeepProgressUI(deep);
+  if (state.wasDeepActive && !deepActive && deep.state === "idle") {
+    showToast("Deep Self-Portrait finished in the background!");
+    loadMirrorAndMemories();
+  }
+  state.wasDeepActive = deepActive;
 
   // Memory badge
   const memCnt = data.memory_count ?? 0;
@@ -693,6 +731,37 @@ async function sendMessage(text) {
 
 /* --- Mirror & Memories --- */
 
+function syncDeepProgressUI(deep) {
+  const prog = $("deepSynthProgress");
+  const progText = $("deepSynthText");
+  const progBar = $("deepSynthBar");
+  const deepBtn = $("deepSynthBtn");
+  const stopBtn = $("deepStopBtn");
+  if (!prog || !deepBtn) return;
+
+  const active = deep && (deep.state === "reading" || deep.state === "reducing");
+  deepBtn.disabled = !!active;
+  stopBtn.classList.toggle("hidden", !active);
+
+  if (active) {
+    prog.classList.remove("hidden");
+    progText.textContent = deep.message || "Reading vault…";
+    const pct = deep.total_notes
+      ? Math.max(3, Math.min(99, Math.round((deep.notes_processed / deep.total_notes) * 100)))
+      : 5;
+    progBar.style.width = `${pct}%`;
+  } else if (deep && (deep.state === "stopped" || deep.state === "error")) {
+    prog.classList.remove("hidden");
+    progText.textContent = deep.message || "";
+    const pct = deep.total_notes ? Math.round((deep.notes_processed / deep.total_notes) * 100) : 0;
+    progBar.style.width = `${pct}%`;
+  } else if (deep && deep.message && deep.notes_processed > 0) {
+    prog.classList.remove("hidden");
+    progText.textContent = deep.message;
+    progBar.style.width = "100%";
+  }
+}
+
 function updateProfileMeta(profile) {
   if (!profile || !profile.updated_at) return;
   const scopeLabel = profile.is_deep
@@ -806,7 +875,9 @@ function bindEvents() {
       method: "POST",
       body: JSON.stringify({ user_name, vault_path }),
     });
-    showToast("Vault connected! Scanning your notes now…");
+    $("onboardingCard").classList.add("hidden");
+    $("welcomeCard").classList.remove("hidden");
+    showToast("Vault connected! Processing in the background — explore freely or start chatting.");
     await loadStatus();
     renderMessages();
   };
@@ -870,63 +941,23 @@ function bindEvents() {
   };
 
   $("deepSynthBtn").onclick = async () => {
-    const btn = $("deepSynthBtn");
-    const prog = $("deepSynthProgress");
-    const progText = $("deepSynthText");
-    const progBar = $("deepSynthBar");
-    btn.disabled = true;
-    $("synthProfileBtn").disabled = true;
-    prog.classList.remove("hidden");
-    progText.textContent = "Preparing note-by-note chronological read of your vault…";
-    progBar.style.width = "2%";
+    await api("/api/self-profile/deep-start", { method: "POST" });
+    showToast("Reading your notes one by one in the background — feel free to explore.");
+    await loadStatus();
+  };
 
-    try {
-      const res = await fetch("/api/self-profile/deep-synthesize", { method: "POST" });
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+  const stopDeep = async () => {
+    await api("/api/self-profile/deep-stop", { method: "POST" });
+    showToast("Paused background reading (all digested notes are saved).");
+    await loadStatus();
+  };
+  $("deepStopBtn").onclick = stopDeep;
+  $("bgStopDeepBtn").onclick = stopDeep;
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split("\n\n");
-        buffer = events.pop();
-
-        for (const ev of events) {
-          const lines = ev.split("\n");
-          let type = "message";
-          let payload = "";
-          for (const l of lines) {
-            if (l.startsWith("event:")) type = l.slice(6).trim();
-            if (l.startsWith("data:")) payload += l.slice(5).trim();
-          }
-          if (!payload) continue;
-          const parsed = JSON.parse(payload);
-          if (type === "progress") {
-            progText.textContent = parsed.message || "Reading vault…";
-            if (parsed.total_notes) {
-              const pct = Math.min(98, Math.max(2, Math.round((parsed.notes_processed / parsed.total_notes) * 100)));
-              progBar.style.width = `${pct}%`;
-            }
-          } else if (type === "done") {
-            state.profile = parsed.profile;
-            $("profileDisplay").innerHTML = renderMarkdown(parsed.profile.summary_md);
-            updateProfileMeta(parsed.profile);
-            progBar.style.width = "100%";
-            progText.textContent = `Complete — synthesized one by one across all ${parsed.total_notes} notes.`;
-            showToast(`Deep Self-Portrait built from ${parsed.total_notes} notes!`);
-          } else if (type === "error") {
-            progText.textContent = `Error: ${parsed.error}`;
-          }
-        }
-      }
-    } catch (err) {
-      progText.textContent = `Failed: ${err.message}`;
-    } finally {
-      btn.disabled = false;
-      $("synthProfileBtn").disabled = false;
-    }
+  $("fullProcessBtn").onclick = async () => {
+    await api("/api/index?force_reembed=false&include_deep=true", { method: "POST" });
+    showToast("Full background vault processing started.");
+    await loadStatus();
   };
 
   $("editProfileBtn").onclick = () => {
@@ -1023,10 +1054,16 @@ async function init() {
   bindEvents();
   await Promise.all([loadStatus(), loadConversations()]);
   setInterval(() => {
-    if (state.status && state.status.index_status.state !== "idle") {
+    const idxState = state.status?.index_status?.state;
+    const deepState = state.status?.deep_status?.state;
+    if (
+      (idxState && idxState !== "idle" && idxState !== "error") ||
+      deepState === "reading" ||
+      deepState === "reducing"
+    ) {
       loadStatus();
     }
-  }, 2500);
+  }, 1800);
 }
 
 init();

@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from .config import DB_PATH, load_config, save_config
 from .db import (
+    clear_vault_data,
     db_session,
     get_conversation_messages,
     get_memories,
@@ -46,8 +47,16 @@ init_db(DB_PATH)
 retriever = HybridRetriever(DB_PATH)
 indexer = VaultIndexer(load_config, DB_PATH, on_index_updated=retriever.reload_vectors)
 _index_task: Optional[asyncio.Task] = None
+_deep_task: Optional[asyncio.Task] = None
 _bg_tasks: set[asyncio.Task] = set()
 _last_learned_at: Optional[str] = None
+_deep_status: dict[str, Any] = {
+    "state": "idle",  # idle | reading | reducing | error | stopped
+    "notes_processed": 0,
+    "total_notes": 0,
+    "message": "",
+    "updated_at": None,
+}
 
 
 def _track_task(coro) -> asyncio.Task:
@@ -55,6 +64,92 @@ def _track_task(coro) -> asyncio.Task:
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
     return task
+
+
+async def _run_deep_synthesis_bg() -> None:
+    global _deep_status, _last_learned_at
+    cfg = load_config()
+    if cfg.provider == "ollama":
+        ollama = await check_ollama(cfg.ollama_url)
+        if not ollama.get("online"):
+            _deep_status = {
+                "state": "idle",
+                "notes_processed": 0,
+                "total_notes": indexer.status.indexed_notes,
+                "message": "Vault indexed! Start Ollama (or add an API key) to build your deep Self-Portrait.",
+                "updated_at": utc_now_iso(),
+            }
+            return
+
+    _deep_status = {
+        "state": "reading",
+        "notes_processed": 0,
+        "total_notes": indexer.status.indexed_notes,
+        "message": "Starting background note-by-note reading…",
+        "updated_at": utc_now_iso(),
+    }
+    try:
+        async for item in deep_synthesize_self_profile_stream(cfg, db_path=DB_PATH):
+            stage = item.get("stage", "reading")
+            if stage == "done":
+                _last_learned_at = utc_now_iso()
+                _deep_status = {
+                    "state": "idle",
+                    "notes_processed": item.get("total_notes", 0),
+                    "total_notes": item.get("total_notes", 0),
+                    "message": f"Deep Self-Portrait ready ({item.get('total_notes', 0)} notes).",
+                    "updated_at": _last_learned_at,
+                }
+            elif stage == "error":
+                _deep_status = {
+                    "state": "error",
+                    "notes_processed": 0,
+                    "total_notes": 0,
+                    "message": item.get("error", "Deep synthesis failed."),
+                    "updated_at": utc_now_iso(),
+                }
+            else:
+                _deep_status = {
+                    "state": stage,
+                    "notes_processed": item.get("notes_processed", 0),
+                    "total_notes": item.get("total_notes", 0),
+                    "message": item.get("message", "Reading vault…"),
+                    "updated_at": utc_now_iso(),
+                }
+    except asyncio.CancelledError:
+        _deep_status = {
+            "state": "stopped",
+            "notes_processed": _deep_status.get("notes_processed", 0),
+            "total_notes": _deep_status.get("total_notes", 0),
+            "message": "Paused — progress saved and resumable anytime.",
+            "updated_at": utc_now_iso(),
+        }
+        raise
+    except Exception as exc:
+        _deep_status = {
+            "state": "error",
+            "notes_processed": _deep_status.get("notes_processed", 0),
+            "total_notes": _deep_status.get("total_notes", 0),
+            "message": str(exc),
+            "updated_at": utc_now_iso(),
+        }
+
+
+def _start_deep_bg() -> bool:
+    global _deep_task
+    if _deep_task and not _deep_task.done():
+        return False
+    _deep_task = asyncio.create_task(_run_deep_synthesis_bg())
+    return True
+
+
+async def _run_vault_pipeline(force_reembed: bool = False, run_deep: bool = False) -> None:
+    await indexer.index_vault(force_reembed=force_reembed)
+    cfg = load_config()
+    if run_deep and cfg.auto_learn:
+        _start_deep_bg()
+    else:
+        await maybe_evolve_self_profile(cfg, DB_PATH)
 
 
 def _detect_candidate_vaults() -> List[str]:
@@ -127,6 +222,8 @@ async def lifespan(app: FastAPI):
         indexer.stop_watcher()
         if _index_task and not _index_task.done():
             _index_task.cancel()
+        if _deep_task and not _deep_task.done():
+            _deep_task.cancel()
         for t in list(_bg_tasks):
             t.cancel()
 
@@ -283,6 +380,7 @@ async def get_status():
         "model_recommendations": recommendations,
         "provider_models": provider_models,
         "index_status": indexer.status.to_dict(),
+        "deep_status": _deep_status,
         "vault_folders": vault_folders,
         "indexed_folders": folder_counts,
         "recent_notes": recent_notes,
@@ -322,32 +420,46 @@ async def update_settings(payload: SettingsUpdate):
             setattr(cfg, k, v)
     save_config(cfg)
 
-    global _index_task
-    if (
-        cfg.vault_path != old_vault
-        or sorted(cfg.excluded_folders) != sorted(old_excluded)
-    ):
+    global _index_task, _deep_task, _deep_status
+    vault_switched = bool(cfg.vault_path and cfg.vault_path != old_vault)
+    folders_changed = sorted(cfg.excluded_folders) != sorted(old_excluded)
+
+    if vault_switched or folders_changed:
+        if vault_switched:
+            if _deep_task and not _deep_task.done():
+                _deep_task.cancel()
+            if _index_task and not _index_task.done():
+                _index_task.cancel()
+            if old_vault:
+                clear_vault_data(DB_PATH)
+                retriever.reload_vectors()
+                indexer._refresh_stats()
+            _deep_status = {
+                "state": "idle",
+                "notes_processed": 0,
+                "total_notes": 0,
+                "message": "",
+                "updated_at": None,
+            }
+
         if cfg.vault_path and Path(cfg.vault_path).exists():
             indexer.start_watcher(asyncio.get_running_loop())
-            if not _index_task or _index_task.done():
-                _index_task = asyncio.create_task(
-                    indexer.index_vault(force_reembed=False)
-                )
+            _index_task = asyncio.create_task(
+                _run_vault_pipeline(force_reembed=False, run_deep=vault_switched)
+            )
 
     return {"config": cfg.to_public_dict()}
 
 
 @app.post("/api/index")
-async def trigger_index(force_reembed: bool = False):
+async def trigger_index(force_reembed: bool = False, include_deep: bool = False):
     global _index_task
     if _index_task and not _index_task.done():
         return {"started": False, "index_status": indexer.status.to_dict()}
 
-    async def _run():
-        await indexer.index_vault(force_reembed=force_reembed)
-        await maybe_evolve_self_profile(load_config(), DB_PATH)
-
-    _index_task = asyncio.create_task(_run())
+    _index_task = asyncio.create_task(
+        _run_vault_pipeline(force_reembed=force_reembed, run_deep=include_deep)
+    )
     return {"started": True, "index_status": indexer.status.to_dict()}
 
 
@@ -675,6 +787,21 @@ async def api_synthesize_self_profile():
         return {"profile": profile}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Synthesis failed: {exc}")
+
+
+@app.post("/api/self-profile/deep-start")
+async def api_deep_start():
+    started = _start_deep_bg()
+    return {"started": started, "deep_status": _deep_status}
+
+
+@app.post("/api/self-profile/deep-stop")
+async def api_deep_stop():
+    global _deep_task
+    if _deep_task and not _deep_task.done():
+        _deep_task.cancel()
+        return {"stopped": True, "deep_status": _deep_status}
+    return {"stopped": False, "deep_status": _deep_status}
 
 
 @app.post("/api/self-profile/deep-synthesize")

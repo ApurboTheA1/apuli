@@ -356,3 +356,27 @@ def test_deep_whole_vault_synthesis(tmp_path: Path, monkeypatch):
     events2 = asyncio.run(run_stream())
     assert events2[-1]["stage"] == "done"
     assert [p for p in prompts_seen if "Read this Obsidian note" in p] == []
+
+    # Switching vaults via clear_vault_data removes old notes, digests, and self_profile
+    from backend.db import clear_vault_data, db_session
+
+    clear_vault_data(db_file)
+    assert get_self_profile(db_file) is None
+    with db_session(db_file) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM note_digests").fetchone()[0] == 0
+
+
+def test_status_exposes_deep_status():
+    from backend.app import app
+
+    with TestClient(app) as client:
+        res = client.get("/api/status")
+        assert res.status_code == 200
+        body = res.json()
+        assert "deep_status" in body
+        assert "state" in body["deep_status"]
+
+        prof = client.get("/api/self-profile")
+        assert prof.status_code == 200
+        assert "digested_notes" in prof.json()

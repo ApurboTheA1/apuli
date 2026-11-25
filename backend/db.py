@@ -252,3 +252,13 @@ def get_self_profile(db_path: Path = DB_PATH) -> Optional[Dict[str, Any]]:
             """
         ).fetchone()
         return dict(row) if row else None
+
+
+def clear_vault_data(db_path: Path = DB_PATH) -> None:
+    """Clear vault-derived index, digests, and self-portrait when switching to a different vault."""
+    with db_session(db_path) as conn:
+        conn.execute("DELETE FROM chunks_fts")
+        conn.execute("DELETE FROM chunks")
+        conn.execute("DELETE FROM note_digests")
+        conn.execute("DELETE FROM notes")
+        conn.execute("DELETE FROM self_profile")

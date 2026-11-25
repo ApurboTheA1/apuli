@@ -29,6 +29,15 @@
         </div>
       </div>
 
+      <div class="bg-progress-card hidden" id="bgProgressCard">
+        <div class="bg-progress-head">
+          <span id="bgProgressLabel">Processing vault…</span>
+          <button type="button" class="mini-btn hidden" id="bgStopDeepBtn" title="Pause background reading (progress is saved)">Pause</button>
+        </div>
+        <div class="bg-progress-msg" id="bgProgressMsg"></div>
+        <div class="progress-track"><div id="bgProgressBar" class="progress-fill"></div></div>
+      </div>
+
       <button class="btn-primary new-chat-btn" id="newChatBtn">+ New Conversation</button>
 
       <nav class="nav-tabs">
@@ -161,7 +170,8 @@
               <div class="panel-actions">
                 <button class="btn-ghost" id="editProfileBtn">Edit</button>
                 <button class="btn-ghost" id="synthProfileBtn" title="Fast refresh using your 22 newest notes">Quick Refresh</button>
-                <button class="btn-primary" id="deepSynthBtn" title="Read every indexed note chronologically across your entire vault">Deep Read Whole Vault</button>
+                <button class="btn-primary" id="deepSynthBtn" title="Read every indexed note chronologically in the background">Deep Read Whole Vault</button>
+                <button class="btn-ghost hidden" id="deepStopBtn" title="Pause background reading (resumable anytime)">Pause</button>
               </div>
             </div>
             <div id="deepSynthProgress" class="embed-box hidden" style="margin-bottom: 12px;">
@@ -233,8 +243,9 @@
             <div class="panel">
               <h3>Vault &amp; Indexing</h3>
               <div class="stat-row" id="indexStatsBox">Loading stats…</div>
-              <div class="panel-actions" style="margin-top: 12px;">
-                <button class="btn-primary" id="reindexBtn">Re-index Vault Now</button>
+              <div class="panel-actions" style="margin-top: 12px; flex-wrap: wrap;">
+                <button class="btn-primary" id="fullProcessBtn" title="Re-index notes and run background deep reading">Run Full Vault Processing</button>
+                <button class="btn-ghost" id="reindexBtn">Re-index Only</button>
                 <button class="btn-ghost" id="reembedBtn">Rebuild Embeddings</button>
               </div>
               <div class="embed-box" id="embedBox"></div>
