@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apuli — Local Obsidian Companion</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">◈</div>
+        <div>
+          <div class="brand-title" id="brandTitle">Apuli</div>
+          <div class="brand-sub">Local-First Vault Companion</div>
+        </div>
+      </div>
+
+      <div class="status-pills">
+        <div class="pill" id="ollamaPill" title="Ollama local runtime status">
+          <span class="dot"></span>
+          <span id="ollamaPillText">Checking Ollama…</span>
+        </div>
+        <div class="pill" id="indexPill" title="Obsidian vault index status">
+          <span class="dot"></span>
+          <span id="indexPillText">Scanning vault…</span>
+        </div>
+      </div>
+
+      <button class="btn-primary new-chat-btn" id="newChatBtn">+ New Conversation</button>
+
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-view="chat">💬 Conversations</button>
+        <button class="nav-tab" data-view="mirror">🪞 Who I Am &amp; Memory</button>
+        <button class="nav-tab" data-view="settings">⚙️ Vault, Hardware &amp; Models</button>
+      </nav>
+
+      <div class="conv-list-header">Recent Chats</div>
+      <div class="conv-list" id="convList"></div>
+
+      <div class="sidebar-footer">
+        <div class="privacy-badge" id="memoryBadge">🔒 Local-first · 0 memories</div>
+      </div>
+    </aside>
+
+    <!-- Main Area -->
+    <main class="main-area">
+      <!-- Chat View -->
+      <section class="view active" id="view-chat">
+        <header class="chat-header">
+          <div class="mode-pills" id="modePills">
+            <button class="mode-pill active" data-mode="companion" title="Warm, reflective personal companion">Companion</button>
+            <button class="mode-pill" data-mode="recall" title="Exact memory & date lookup from notes">Memory Recall</button>
+            <button class="mode-pill" data-mode="mirror" title="Patterns, loops, and growth over time">Pattern Mirror</button>
+            <button class="mode-pill" data-mode="creative" title="Brainstorm with your ideas & notes">Creative Partner</button>
+          </div>
+
+          <div class="chat-controls">
+            <label class="select-wrap" title="Filter which vault folders to search">
+              <span>Scope</span>
+              <select id="folderScopeSelect">
+                <option value="all">All Indexed Folders</option>
+              </select>
+            </label>
+
+            <label class="select-wrap" title="Local Ollama model or optional cloud API">
+              <span>Model</span>
+              <select id="modelSelect"></select>
+            </label>
+
+            <button class="btn-ghost" id="distillBtn" title="Extract enduring memories from this chat into your Memory Bank">
+              ✨ Remember Chat
+            </button>
+          </div>
+        </header>
+
+        <div class="chat-scroll" id="chatScroll">
+          <!-- First-run Onboarding Banner -->
+          <div class="onboarding-card hidden" id="onboardingCard">
+            <div class="welcome-orb">◈</div>
+            <h2>Connect Your Obsidian Vault to Apuli</h2>
+            <p class="muted">
+              Apuli runs <strong>local-first</strong> on your machine to talk with you, remember your threads, and grow with your vault.
+            </p>
+            <form id="onboardingForm" class="onboarding-form">
+              <label>
+                <span>Your Name</span>
+                <input type="text" id="onboardName" placeholder="e.g., Alex" required />
+              </label>
+              <label>
+                <span>Obsidian Vault Folder Path</span>
+                <input type="text" id="onboardVault" placeholder="e.g., C:\Users\You\Documents\Obsidian" required />
+              </label>
+              <div id="candidateVaultsBox" class="candidate-vaults"></div>
+              <div id="onboardHardwareSummary" class="embed-box"></div>
+              <button type="submit" class="btn-primary">Connect Vault &amp; Start</button>
+            </form>
+          </div>
+
+          <div class="welcome-card" id="welcomeCard">
+            <div class="welcome-orb">◈</div>
+            <h1 id="welcomeHeading">Hey there, I’m here.</h1>
+            <p class="welcome-sub">
+              I’m running local-first on your machine using your Obsidian vault and memory bank.
+              Ask me to recall a moment, trace a pattern in your thinking, or just talk things through.
+            </p>
+            <div class="starter-grid">
+              <button class="starter-btn" data-prompt="Based on my notes, what recurring themes or questions have been on my mind lately?">
+                <strong>Trace recent threads</strong>
+                <span>What’s been on my mind across my recent notes?</span>
+              </button>
+              <button class="starter-btn" data-prompt="Help me remember myself: what values, projects, and feelings keep showing up across my vault?">
+                <strong>Help me remember myself</strong>
+                <span>Reflect my core values and patterns back to me</span>
+              </button>
+              <button class="starter-btn" data-prompt="Look through my creative notes and inbox ideas — what sparks have I been sitting on?">
+                <strong>Revisit creative sparks</strong>
+                <span>Explore unfinished ideas &amp; projects in my vault</span>
+              </button>
+              <button class="starter-btn" data-prompt="Who are the key people or relationships that show up meaningfully in my notes?">
+                <strong>People &amp; anchors</strong>
+                <span>Surface meaningful connections from my notes</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="messages-container" id="messagesContainer"></div>
+        </div>
+
+        <form class="composer-wrap" id="chatForm">
+          <div class="composer-box">
+            <textarea
+              id="chatInput"
+              rows="1"
+              placeholder="Talk to Apuli, ask about a memory, or think out loud… (Enter to send, Shift+Enter for new line)"
+            ></textarea>
+            <button type="submit" class="send-btn" id="sendBtn">Send</button>
+          </div>
+          <div class="composer-hint" id="composerHint"></div>
+        </form>
+      </section>
+
+      <!-- Mirror & Memories View -->
+      <section class="view" id="view-mirror">
+        <div class="page-scroll">
+          <div class="page-header">
+            <div>
+              <h2>Who I Am &amp; Long-Term Memory</h2>
+              <p class="muted">Synthesized and stored purely in your local SQLite database. Edit or delete anything anytime.</p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>Self-Portrait</h3>
+                <p class="muted small" id="profileUpdatedAt">Not synthesized yet — click Generate to build one from your notes.</p>
+              </div>
+              <div class="panel-actions">
+                <button class="btn-ghost" id="editProfileBtn">Edit</button>
+                <button class="btn-primary" id="synthProfileBtn">Generate from Vault</button>
+              </div>
+            </div>
+            <div id="profileDisplay" class="markdown-body profile-body">
+              <p class="muted">Click <strong>Generate from Vault</strong> to let your model read your recent notes and reflect back a grounded portrait of who you are right now.</p>
+            </div>
+            <div id="profileEditorWrap" class="hidden">
+              <textarea id="profileEditor" class="code-textarea" rows="12"></textarea>
+              <div class="panel-actions right" style="margin-top: 10px;">
+                <button class="btn-ghost" id="cancelProfileBtn">Cancel</button>
+                <button class="btn-primary" id="saveProfileBtn">Save Portrait</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>Memory Bank</h3>
+                <p class="muted small">Enduring values, milestones, relationships, and threads Apuli remembers across conversations.</p>
+              </div>
+            </div>
+
+            <form class="add-memory-form" id="addMemoryForm">
+              <select id="memoryCategory">
+                <option value="value">Value</option>
+                <option value="milestone">Milestone</option>
+                <option value="pattern">Pattern</option>
+                <option value="relationship">Relationship</option>
+                <option value="thread">Thread</option>
+                <option value="preference">Preference</option>
+              </select>
+              <input type="text" id="memoryInput" placeholder="Add something you want Apuli to remember about you…" />
+              <button type="submit" class="btn-primary">Save Memory</button>
+            </form>
+
+            <div class="memories-list" id="memoriesList"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Vault, Hardware & Settings View -->
+      <section class="view" id="view-settings">
+        <div class="page-scroll">
+          <div class="page-header">
+            <div>
+              <h2>Vault, Hardware &amp; AI Models</h2>
+              <p class="muted">Local-first with Ollama by default. Optionally connect frontier APIs when you want extra horsepower.</p>
+            </div>
+          </div>
+
+          <!-- Hardware Advisor Panel -->
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>Hardware Advisor (Local-First)</h3>
+                <p class="muted small" id="hwSpecsLine">Inspecting hardware…</p>
+              </div>
+            </div>
+            <div class="embed-box" id="hwSummaryBox">Analyzing CPU, RAM, and GPU…</div>
+            <div class="hw-rec-grid" id="hwRecGrid"></div>
+            <div id="pullAnyProgress" class="muted small" style="margin-top: 8px;"></div>
+          </div>
+
+          <div class="grid-two">
+            <div class="panel">
+              <h3>Vault &amp; Indexing</h3>
+              <div class="stat-row" id="indexStatsBox">Loading stats…</div>
+              <div class="panel-actions" style="margin-top: 12px;">
+                <button class="btn-primary" id="reindexBtn">Re-index Vault Now</button>
+                <button class="btn-ghost" id="reembedBtn">Rebuild Embeddings</button>
+              </div>
+              <div class="embed-box" id="embedBox"></div>
+            </div>
+
+            <div class="panel">
+              <h3>Folder Privacy</h3>
+              <p class="muted small">Only checked folders are indexed. Hidden folders (<code>.obsidian</code>, <code>.trash</code>) are always excluded.</p>
+              <div class="folder-checks" id="folderChecks"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3>Companion &amp; Learning Settings</h3>
+            <form id="settingsForm" class="settings-grid">
+              <label>
+                <span>Your Name</span>
+                <input type="text" id="setUserName" />
+              </label>
+              <label>
+                <span>Companion Name</span>
+                <input type="text" id="setCompanionName" />
+              </label>
+              <label>
+                <span>Obsidian Vault Path</span>
+                <input type="text" id="setVaultPath" />
+              </label>
+              <label>
+                <span>Ollama URL (Local Primary)</span>
+                <input type="text" id="setOllamaUrl" />
+              </label>
+              <label>
+                <span>Default Local Chat Model</span>
+                <select id="setChatModel"></select>
+              </label>
+              <label>
+                <span>Local Embedding Model</span>
+                <input type="text" id="setEmbedModel" />
+              </label>
+              <label>
+                <span>Warmth / Creativity (Temperature)</span>
+                <input type="number" step="0.05" min="0" max="1.5" id="setTemp" />
+              </label>
+              <label>
+                <span>Retrieved Note Excerpts (Top-K)</span>
+                <input type="number" min="2" max="16" id="setTopK" />
+              </label>
+              <label>
+                <span>Auto-distill every N user turns</span>
+                <input type="number" min="1" max="10" id="setAutoTurns" />
+              </label>
+              <label>
+                <span>Active Default Provider</span>
+                <select id="setProvider">
+                  <option value="ollama">Local Ollama (Recommended · 100% Private)</option>
+                  <option value="openai">OpenAI API (Cloud)</option>
+                  <option value="anthropic">Anthropic Claude API (Cloud)</option>
+                  <option value="gemini">Google Gemini API (Cloud)</option>
+                  <option value="openai_compatible">Custom OpenAI-Compatible Endpoint</option>
+                </select>
+              </label>
+              <label class="checkbox-inline">
+                <input type="checkbox" id="setGraphExpand" />
+                <span>Follow <code>[[wikilinks]]</code> between notes for extra context</span>
+              </label>
+              <label class="checkbox-inline">
+                <input type="checkbox" id="setAutoLearn" />
+                <span>Auto-learn from conversations &amp; evolve Self-Portrait as notes grow</span>
+              </label>
+              <label class="checkbox-inline">
+                <input type="checkbox" id="setCrossChat" />
+                <span>Recall relevant moments from past Apuli conversations</span>
+              </label>
+
+              <div class="frontier-section" style="grid-column: 1 / -1;">
+                <details>
+                  <summary>☁️ Optional Frontier AI APIs (Only used if selected — keys stay in local <code>data/config.json</code>)</summary>
+                  <div class="settings-grid" style="margin-top: 12px;">
+                    <label>
+                      <span>OpenAI API Key</span>
+                      <input type="password" id="setOpenaiKey" placeholder="sk-..." autocomplete="off" />
+                    </label>
+                    <label>
+                      <span>OpenAI Model</span>
+                      <input type="text" id="setOpenaiModel" placeholder="gpt-4o-mini" />
+                    </label>
+                    <label>
+                      <span>Anthropic API Key</span>
+                      <input type="password" id="setAnthropicKey" placeholder="sk-ant-..." autocomplete="off" />
+                    </label>
+                    <label>
+                      <span>Anthropic Model</span>
+                      <input type="text" id="setAnthropicModel" placeholder="claude-sonnet-4-20250514" />
+                    </label>
+                    <label>
+                      <span>Google Gemini API Key</span>
+                      <input type="password" id="setGeminiKey" placeholder="AIza..." autocomplete="off" />
+                    </label>
+                    <label>
+                      <span>Gemini Model</span>
+                      <input type="text" id="setGeminiModel" placeholder="gemini-2.5-flash" />
+                    </label>
+                    <label>
+                      <span>Custom OpenAI-Compatible Base URL (LM Studio / OpenRouter / Groq)</span>
+                      <input type="text" id="setCustomUrl" placeholder="http://127.0.0.1:1234/v1" />
+                    </label>
+                    <label>
+                      <span>Custom API Key &amp; Model</span>
+                      <div style="display:flex; gap:6px;">
+                        <input type="password" id="setCustomKey" placeholder="Optional key" autocomplete="off" style="flex:1;" />
+                        <input type="text" id="setCustomModel" placeholder="model-name" style="flex:1;" />
+                      </div>
+                    </label>
+                  </div>
+                </details>
+              </div>
+
+              <div class="panel-actions right" style="grid-column: 1 / -1;">
+                <span class="muted small" id="settingsSavedMsg"></span>
+                <button type="submit" class="btn-primary">Save Settings</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
