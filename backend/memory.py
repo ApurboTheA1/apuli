@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
+from .analytics import compute_vault_analytics
 from .config import AppConfig, DB_PATH, is_in_folders
 from .db import (
     db_session,
@@ -57,6 +58,8 @@ def build_system_prompt(
     mode: str,
     retrieved: List[RetrievedChunk],
     past_chats: Optional[List[RetrievedChatChunk]] = None,
+    temporal_label: Optional[str] = None,
+    vault_intel: Optional[Dict[str, Any]] = None,
 ) -> str:
     today_str = datetime.now().strftime("%A, %B %d, %Y")
     mode_block = MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["companion"])
@@ -75,6 +78,29 @@ def build_system_prompt(
         "- When recalling an earlier conversation, mention what you talked about naturally without overstating.\n"
         "- Never fabricate details that aren't in the context. If memory is incomplete, say so honestly.",
     ]
+
+    if temporal_label:
+        parts.append(
+            f"Temporal focus detected in user's question: {temporal_label}. Prioritize notes and context from this timeframe."
+        )
+
+    if vault_intel:
+        intel_lines = []
+        rels = vault_intel.get("relationships") or []
+        if rels:
+            top_p = ", ".join(
+                f"{r['name']} ({r['mentions']} mentions, {r.get('first_seen') or '?'}→{r.get('last_seen') or '?'})"
+                for r in rels[:8]
+            )
+            intel_lines.append(f"- Key People in Vault: {top_p}")
+        clusters = vault_intel.get("clusters") or []
+        if clusters:
+            top_c = "; ".join(
+                f"{c['label']} ({c['note_count']} notes)" for c in clusters[:5]
+            )
+            intel_lines.append(f"- Discovered Life Themes: {top_c}")
+        if intel_lines:
+            parts.append("=== VAULT GRAPH & PATTERN SIGNALS ===\n" + "\n".join(intel_lines))
 
     if profile and profile.get("summary_md"):
         parts.append(
@@ -787,7 +813,27 @@ async def deep_synthesize_self_profile_stream(
             f"- ({m['category']}) {m['content']}" for m in memories[:25]
         )
 
+        # Weave classic ML cluster + relationship signals into the Self-Portrait
+        analytics = compute_vault_analytics(db_path, cfg.journal_folders)
+        ml_lines = []
+        if analytics.get("clusters"):
+            ml_lines.append(
+                "Discovered Semantic Life Clusters: "
+                + "; ".join(f"{c['label']} ({c['note_count']} notes)" for c in analytics["clusters"][:6])
+            )
+        if analytics.get("relationships"):
+            ml_lines.append(
+                "Most Mentioned People Across Vault: "
+                + ", ".join(
+                    f"{r['name']} ({r['mentions']}x, {r.get('first_seen') or '?'}→{r.get('last_seen') or '?'})"
+                    for r in analytics["relationships"][:10]
+                )
+            )
+        ml_block = ("=== STATISTICAL & GRAPH SIGNALS ===\n" + "\n".join(ml_lines)) if ml_lines else ""
+
         synthesis_sections = []
+        if ml_block:
+            synthesis_sections.append(ml_block)
         if folded_journals:
             synthesis_sections.append(
                 "=== CORE JOURNAL & PERIODIC REFLECTIONS (Primary Grounding) ===\n"

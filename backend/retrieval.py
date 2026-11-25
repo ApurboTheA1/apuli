@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .analytics import compute_graph_and_relationships, parse_temporal_filter
 from .config import AppConfig, DB_PATH, is_in_folders
 from .db import db_session
 from .ollama_client import embed_texts, has_model
@@ -80,6 +81,8 @@ class HybridRetriever:
         self._chunk_ids: List[int] = []
         self._chunk_folders: List[str] = []
         self._chunk_paths: List[str] = []
+        self._chunk_dates: List[Optional[str]] = []
+        self._pagerank: Dict[str, float] = {}
         self._matrix: Optional[np.ndarray] = None
         self._dim: int = 0
 
@@ -94,7 +97,7 @@ class HybridRetriever:
         with db_session(self._db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT c.id, c.embedding, c.embedding_dim, n.folder, n.path
+                SELECT c.id, c.embedding, c.embedding_dim, n.folder, n.path, n.note_date
                 FROM chunks c
                 JOIN notes n ON n.path = c.note_path
                 WHERE c.embedding IS NOT NULL AND c.embedding_dim > 0
@@ -117,6 +120,7 @@ class HybridRetriever:
             ids: List[int] = []
             folders: List[str] = []
             paths: List[str] = []
+            dates: List[Optional[str]] = []
             vecs: List[np.ndarray] = []
             for r in rows:
                 if r["embedding_dim"] != dim:
@@ -126,17 +130,24 @@ class HybridRetriever:
                     ids.append(r["id"])
                     folders.append(r["folder"])
                     paths.append(r["path"])
+                    dates.append(r["note_date"])
                     vecs.append(arr)
             if vecs:
                 self._chunk_ids = ids
                 self._chunk_folders = folders
                 self._chunk_paths = paths
+                self._chunk_dates = dates
                 self._matrix = np.vstack(vecs)
                 self._dim = dim
             else:
-                self._chunk_ids, self._chunk_folders, self._chunk_paths, self._matrix, self._dim = [], [], [], None, 0
+                self._chunk_ids, self._chunk_folders, self._chunk_paths, self._chunk_dates, self._matrix, self._dim = [], [], [], [], None, 0
         else:
-            self._chunk_ids, self._chunk_folders, self._chunk_paths, self._matrix, self._dim = [], [], [], None, 0
+            self._chunk_ids, self._chunk_folders, self._chunk_paths, self._chunk_dates, self._matrix, self._dim = [], [], [], [], None, 0
+
+        try:
+            self._pagerank = compute_graph_and_relationships(self._db_path).get("pagerank", {})
+        except Exception:
+            self._pagerank = {}
 
         # Past chat vectors
         if chat_rows:
@@ -205,20 +216,29 @@ class HybridRetriever:
         folder_scope: str,
         limit: int = 24,
         journal_folders: Optional[List[str]] = None,
+        date_range: Optional[Tuple[str, str]] = None,
     ) -> List[Tuple[int, float]]:
         fts_query = self._build_fts_query(query)
         if not fts_query:
             return []
 
         scope_sql, scope_params = self._scope_sql(folder_scope, journal_folders)
-        folder_clause = f"AND {scope_sql}" if scope_sql else ""
-        params: List[object] = [fts_query, *scope_params, limit]
+        clauses = []
+        params: List[object] = [fts_query]
+        if scope_sql:
+            clauses.append(scope_sql)
+            params.extend(scope_params)
+        if date_range:
+            clauses.append("(n.note_date >= ? AND n.note_date <= ?)")
+            params.extend([date_range[0], date_range[1]])
+        extra_clause = ("AND " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
 
         sql = f"""
             SELECT f.chunk_id, bm25(chunks_fts, 1.0, 3.0, 1.5, 2.0, 2.0, 1.0) AS rank
             FROM chunks_fts f
             JOIN notes n ON n.path = f.note_path
-            WHERE chunks_fts MATCH ? {folder_clause}
+            WHERE chunks_fts MATCH ? {extra_clause}
             ORDER BY rank ASC
             LIMIT ?
         """
@@ -235,6 +255,7 @@ class HybridRetriever:
         folder_scope: str,
         limit: int = 24,
         journal_folders: Optional[List[str]] = None,
+        date_range: Optional[Tuple[str, str]] = None,
     ) -> List[Tuple[int, float]]:
         if self._matrix is None or len(query_vec) != self._dim:
             return []
@@ -258,6 +279,13 @@ class HybridRetriever:
             )
             sims = np.where(mask, sims, -1.0)
 
+        if date_range:
+            s_dt, e_dt = date_range
+            dmask = np.array(
+                [bool(d and s_dt <= d <= e_dt) for d in self._chunk_dates], dtype=bool
+            )
+            sims = np.where(dmask, sims, -1.0)
+
         top_n = min(limit, len(self._chunk_ids))
         if top_n <= 0:
             return []
@@ -276,17 +304,26 @@ class HybridRetriever:
         folder_scope: str,
         limit: int = 8,
         journal_folders: Optional[List[str]] = None,
+        date_range: Optional[Tuple[str, str]] = None,
     ) -> List[int]:
         scope_sql, scope_params = self._scope_sql(folder_scope, journal_folders)
-        folder_clause = f"WHERE {scope_sql}" if scope_sql else ""
-        params: List[object] = [*scope_params, limit]
+        clauses = []
+        params: List[object] = []
+        if scope_sql:
+            clauses.append(scope_sql)
+            params.extend(scope_params)
+        if date_range:
+            clauses.append("(n.note_date >= ? AND n.note_date <= ?)")
+            params.extend([date_range[0], date_range[1]])
+        where_clause = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
         with db_session(self._db_path) as conn:
             rows = conn.execute(
                 f"""
                 SELECT c.id
                 FROM chunks c
                 JOIN notes n ON n.path = c.note_path
-                {folder_clause}
+                {where_clause}
                 ORDER BY COALESCE(n.note_date, '') DESC, n.mtime DESC, c.chunk_index ASC
                 LIMIT ?
                 """,
@@ -342,8 +379,13 @@ class HybridRetriever:
                 [t.lower() for t in link_titles[:10]] + [limit + 4],
             ).fetchall()
 
+        linked_candidates = sorted(
+            rows,
+            key=lambda r: self._pagerank.get(r["note_path"], 0.0),
+            reverse=True,
+        )
         linked: List[RetrievedChunk] = []
-        for r in rows:
+        for r in linked_candidates:
             if r["note_path"] in seen_paths:
                 continue
             content_clean = (r["content"] or "").strip()
@@ -588,19 +630,43 @@ class HybridRetriever:
         top_k: Optional[int] = None,
     ) -> List[RetrievedChunk]:
         k = top_k or cfg.top_k_chunks
+        temporal = parse_temporal_filter(query)
+        date_range: Optional[Tuple[str, str]] = (
+            (temporal["start_date"], temporal["end_date"]) if temporal else None
+        )
+
         fts_hits = self._fts_search(
-            query, folder_scope, limit=24, journal_folders=cfg.journal_folders
+            query, folder_scope, limit=24,
+            journal_folders=cfg.journal_folders, date_range=date_range,
         )
 
         vec_hits: List[Tuple[int, float]] = []
+        q_vec: Optional[List[float]] = None
         if self._matrix is not None and await has_model(
             cfg.ollama_url, cfg.embedding_model
         ):
             vecs = await embed_texts(cfg.ollama_url, cfg.embedding_model, [query])
             if vecs:
+                q_vec = vecs[0]
                 vec_hits = self._vector_search(
-                    vecs[0], folder_scope, limit=24, journal_folders=cfg.journal_folders
+                    q_vec, folder_scope, limit=24,
+                    journal_folders=cfg.journal_folders, date_range=date_range,
                 )
+
+        # If a temporal window had zero matching notes, gracefully fall back to full vault
+        if date_range and not fts_hits and not vec_hits:
+            date_chunks = self._recent_chunks(
+                folder_scope, limit=k, journal_folders=cfg.journal_folders, date_range=date_range
+            )
+            if not date_chunks:
+                date_range = None
+                fts_hits = self._fts_search(
+                    query, folder_scope, limit=24, journal_folders=cfg.journal_folders
+                )
+                if q_vec is not None:
+                    vec_hits = self._vector_search(
+                        q_vec, folder_scope, limit=24, journal_folders=cfg.journal_folders
+                    )
 
         scores: Dict[int, float] = {}
         reasons: Dict[int, List[str]] = {}
@@ -616,14 +682,19 @@ class HybridRetriever:
 
         lower_q = query.lower()
         wants_recent = any(h in lower_q for h in RECENCY_HINTS)
-        if wants_recent or not scores:
+        if date_range or wants_recent or not scores:
             recent_ids = self._recent_chunks(
-                folder_scope, limit=6, journal_folders=cfg.journal_folders
+                folder_scope,
+                limit=k if date_range else 6,
+                journal_folders=cfg.journal_folders,
+                date_range=date_range,
             )
             for rank, cid in enumerate(recent_ids):
-                boost = 0.8 if not scores else 0.5
+                boost = 0.9 if date_range else (0.8 if not scores else 0.5)
                 scores[cid] = scores.get(cid, 0.0) + (boost / (rrf_k + rank + 1))
-                reasons.setdefault(cid, []).append("recent")
+                reasons.setdefault(cid, []).append(
+                    f"date:{temporal['label']}" if date_range and temporal else "recent"
+                )
 
         if not scores:
             return []

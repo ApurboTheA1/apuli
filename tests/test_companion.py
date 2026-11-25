@@ -547,3 +547,118 @@ def test_configurable_performance_settings_and_ram_cache(tmp_path: Path):
     assert pub["embed_batch_size"] == 64
     assert pub["ollama_keep_alive"] == "60m"
     assert pub["ollama_num_thread"] == 12
+
+
+def test_vault_analytics_temporal_and_on_this_day(tmp_path: Path, monkeypatch):
+    from datetime import date
+    from backend import app as app_mod
+    from backend.analytics import (
+        compute_vault_analytics,
+        get_on_this_day,
+        parse_temporal_filter,
+    )
+
+    # 1. Deterministic temporal query parser
+    april = parse_temporal_filter("What happened in April 2023?", today=date(2026, 11, 26))
+    assert april is not None
+    assert april["start_date"] == "2023-04-01"
+    assert april["end_date"].startswith("2023-04-")
+
+    last_m = parse_temporal_filter("Show me notes from last month", today=date(2026, 3, 15))
+    assert last_m is not None
+    assert last_m["start_date"] == "2026-02-01"
+    assert last_m["end_date"].startswith("2026-02-")
+
+    yr = parse_temporal_filter("How was my mindset in 2024?", today=date(2026, 11, 26))
+    assert yr is not None
+    assert yr["start_date"] == "2024-01-01"
+    assert yr["end_date"] == "2024-12-31"
+
+    # 2. Index a small multi-year vault
+    vault = tmp_path / "Vault"
+    (vault / "Personal" / "Journal").mkdir(parents=True)
+    (vault / "People").mkdir(parents=True)
+
+    (vault / "People" / "Rafi.md").write_text(
+        "# Rafi\nClose university friend and collaborator.",
+        encoding="utf-8",
+    )
+    (vault / "Personal" / "Journal" / "2023-04-12.md").write_text(
+        "---\ndate: 2023-04-12\n---\n"
+        "Felt calm and grateful talking with [[Rafi]] about architecture and music on a peaceful evening.",
+        encoding="utf-8",
+    )
+    (vault / "Personal" / "Journal" / "2024-04-13.md").write_text(
+        "---\ndate: 2024-04-13\n---\n"
+        "Feeling overwhelmed and anxious about difficult exams today, though Rafi checked in by text message.",
+        encoding="utf-8",
+    )
+    (vault / "Personal" / "Journal" / "2024-11-26.md").write_text(
+        "---\ndate: 2024-11-26\n---\n"
+        "Looking back two years ago on gratitude, clarity, and quiet creative progress today.",
+        encoding="utf-8",
+    )
+    (vault / "Personal" / "Journal" / "2025-11-25.md").write_text(
+        "---\ndate: 2025-11-25\n---\n"
+        "One year ago feeling peaceful after finishing the software prototype together with [[Rafi]].",
+        encoding="utf-8",
+    )
+
+    db_file = tmp_path / "analytics.db"
+    init_db(db_file)
+    cfg = AppConfig(
+        vault_path=str(vault),
+        journal_folders=["Personal/Journal"],
+        ollama_url="http://127.0.0.1:59999",
+    )
+    indexer = VaultIndexer(lambda: cfg, db_path=db_file)
+    asyncio.run(indexer.index_vault())
+
+    # 3. On This Day (±3 calendar days from prior years)
+    otd = get_on_this_day(
+        db_path=db_file,
+        journal_folders=["Personal/Journal"],
+        today=date(2026, 11, 26),
+        limit=5,
+    )
+    otd_dates = {item["note_date"] for item in otd}
+    assert "2024-11-26" in otd_dates
+    assert "2025-11-25" in otd_dates
+    assert "2023-04-12" not in otd_dates
+
+    # 4. Graph PageRank, People relationship tracking (linked + unlinked), timeline & TF-IDF
+    analytics = compute_vault_analytics(db_path=db_file, journal_folders=["Personal/Journal"])
+    assert isinstance(analytics["clusters"], list)
+    assert len(analytics["anchor_notes"]) >= 1
+    assert any(a["title"] == "Rafi" or a["note_path"].endswith("Rafi.md") for a in analytics["anchor_notes"])
+
+    rel_map = {r["name"]: r for r in analytics["relationships"]}
+    assert "Rafi" in rel_map
+    assert rel_map["Rafi"]["linked_mentions"] == 2
+    assert rel_map["Rafi"]["mentions"] == 3  # includes 1 unlinked mention in 2024-04-13
+
+    months = {m["month"]: m for m in analytics["timeline"]}
+    assert "2023-04" in months
+    assert "2024-04" in months
+    assert months["2023-04"]["sentiment"] > months["2024-04"]["sentiment"]
+    assert len(months["2023-04"]["top_terms"]) >= 1
+
+    # 5. Temporal filtering inside HybridRetriever (direct hits obey the window; graph expansion may attach linked People notes)
+    retriever = HybridRetriever(db_path=db_file)
+    hits = asyncio.run(retriever.retrieve("April 2023", cfg, folder_scope="all"))
+    direct_hits = [h for h in hits if h.match_reason != "linked note"]
+    assert any(h.note_date == "2023-04-12" for h in direct_hits)
+    assert all((h.note_date or "").startswith("2023-04") for h in direct_hits)
+
+    # 6. /api/analytics HTTP endpoint
+    monkeypatch.setattr(app_mod, "DB_PATH", db_file)
+    monkeypatch.setattr(app_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(app_mod, "_analytics_cache", None)
+    with TestClient(app_mod.app) as client:
+        resp = client.get("/api/analytics")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert "relationships" in payload
+        assert "timeline" in payload
+        assert "clusters" in payload
+

@@ -237,6 +237,9 @@ async function loadStatus() {
   }
   state.wasDeepActive = deepActive;
 
+  // On This Day resurfacer on welcome screen
+  renderOnThisDay(data.on_this_day || []);
+
   // Memory & Vault connected badges
   const memCnt = data.memory_count ?? 0;
   const chatCnt = data.chat_chunk_count ?? 0;
@@ -887,10 +890,53 @@ function updateProfileMeta(profile) {
     `Last updated: ${new Date(profile.updated_at).toLocaleString()} · ${scopeLabel}`;
 }
 
+function renderOnThisDay(items) {
+  const box = $("onThisDayBox");
+  if (!box) return;
+  if (!items || !items.length) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = `
+    <div class="on-this-day-head">
+      <span>On This Day in Your Vault</span>
+      <span class="muted small">${items.length} memor${items.length > 1 ? "ies" : "y"}</span>
+    </div>
+    <div class="on-this-day-list">
+      ${items
+        .slice(0, 3)
+        .map(
+          (it) => `
+          <div class="otd-card">
+            <div class="otd-top">
+              <strong>${it.years_ago} year${it.years_ago > 1 ? "s" : ""} ago · ${escapeHtml(it.note_date)} (${escapeHtml(it.title)})</strong>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <button type="button" class="mini-btn otd-reflect-btn" data-date="${escapeHtml(it.note_date)}" data-title="${escapeHtml(it.title)}">Reflect</button>
+                <a class="obsidian-link" href="${escapeHtml(it.obsidian_uri)}">Open ↗</a>
+              </div>
+            </div>
+            <div class="muted small">${escapeHtml(it.preview)}</div>
+          </div>
+        `
+        )
+        .join("")}
+    </div>
+  `;
+  box.querySelectorAll(".otd-reflect-btn").forEach((btn) => {
+    btn.onclick = () =>
+      sendMessage(
+        `Look at my note "${btn.dataset.title}" from ${btn.dataset.date}. Help me remember where my head was at back then and how I've changed since.`
+      );
+  });
+}
+
 async function loadMirrorAndMemories() {
-  const [profRes, memRes] = await Promise.all([
+  const [profRes, memRes, intelRes] = await Promise.all([
     api("/api/self-profile"),
     api("/api/memories"),
+    api("/api/analytics"),
   ]);
   state.profile = profRes.profile;
   state.memories = memRes.memories || [];
@@ -904,6 +950,88 @@ async function loadMirrorAndMemories() {
   }
 
   renderMemories();
+  renderVaultIntelligence(intelRes);
+}
+
+function sentimentColor(val) {
+  if (val >= 0.12) return "var(--sage)";
+  if (val <= -0.12) return "var(--danger)";
+  return "var(--accent)";
+}
+
+function renderVaultIntelligence(intel) {
+  if (!intel) return;
+
+  // 1. Clusters
+  const clusters = intel.clusters || [];
+  $("clustersGrid").innerHTML = clusters.length
+    ? clusters
+        .map(
+          (c) => `
+          <div class="cluster-card">
+            <div style="display:flex; justify-content:space-between; gap:6px; align-items:flex-start;">
+              <strong>${escapeHtml(c.label)}</strong>
+              <span class="muted small">${c.note_count} notes</span>
+            </div>
+            ${c.date_span ? `<div class="muted small">${escapeHtml(c.date_span)}</div>` : ""}
+            <div class="cluster-tags">
+              ${(c.keywords || []).map((k) => `<span class="cluster-tag">${escapeHtml(k)}</span>`).join("")}
+            </div>
+            <div class="cluster-tags" style="margin-top:4px;">
+              ${(c.representative_notes || [])
+                .slice(0, 3)
+                .map(
+                  (r) =>
+                    `<a class="obsidian-link" href="${escapeHtml(r.obsidian_uri)}" title="${escapeHtml(r.note_path)}">${escapeHtml(r.title)} ↗</a>`
+                )
+                .join(" · ")}
+            </div>
+          </div>
+        `
+        )
+        .join("")
+    : `<p class="muted small">Generate embeddings first to discover semantic life clusters.</p>`;
+
+  // 2. Relationships
+  const rels = intel.relationships || [];
+  $("relationshipsList").innerHTML = rels.length
+    ? rels
+        .map(
+          (r) => `
+          <div class="rel-row">
+            <div class="rel-top">
+              <span><span class="sentiment-dot" style="background:${sentimentColor(r.avg_sentiment)};" title="Avg valence: ${r.avg_sentiment}"></span><strong>${escapeHtml(r.name)}</strong></span>
+              <a class="obsidian-link" href="${escapeHtml(r.obsidian_uri)}">Open ↗</a>
+            </div>
+            <div class="muted small">${r.mentions} mentions (${r.journal_mentions} in journals) · ${escapeHtml(r.first_seen || "?")} → ${escapeHtml(r.last_seen || "?")}</div>
+          </div>
+        `
+        )
+        .join("")
+    : `<p class="muted small">No People/ mentions detected yet.</p>`;
+
+  // 3. Monthly Timeline Pulse
+  const timeline = [...(intel.timeline || [])].reverse();
+  const maxWords = Math.max(1, ...timeline.map((t) => t.word_count || 0));
+  $("timelinePulseBox").innerHTML = timeline.length
+    ? timeline
+        .slice(0, 24)
+        .map((t) => {
+          const pct = Math.max(6, Math.round(((t.word_count || 0) / maxWords) * 100));
+          const col = sentimentColor(t.sentiment);
+          return `
+            <div class="pulse-row">
+              <div class="pulse-top">
+                <span><span class="sentiment-dot" style="background:${col};"></span><strong>${escapeHtml(t.month)}</strong></span>
+                <span class="muted small">${t.note_count} notes · ${t.word_count} words · mood ${t.sentiment >= 0 ? "+" : ""}${t.sentiment}</span>
+              </div>
+              <div class="pulse-bar-track"><div class="pulse-bar-fill" style="width:${pct}%; background:${col};"></div></div>
+              ${t.top_terms?.length ? `<div class="muted small">Topics: ${escapeHtml(t.top_terms.join(", "))}</div>` : ""}
+            </div>
+          `;
+        })
+        .join("")
+    : `<p class="muted small">No dated journal notes found yet.</p>`;
 }
 
 function renderMemories() {
@@ -1066,6 +1194,13 @@ function bindEvents() {
 
   $("newChatBtn").onclick = createConversation;
   $("modelSelect").onchange = updateModelPrivacyHint;
+  if ($("refreshAnalyticsBtn")) {
+    $("refreshAnalyticsBtn").onclick = async () => {
+      const intel = await api("/api/analytics");
+      renderVaultIntelligence(intel);
+      showToast("Vault intelligence refreshed.");
+    };
+  }
 
   document.querySelectorAll(".mode-pill").forEach((btn) => {
     btn.onclick = () => setMode(btn.dataset.mode);

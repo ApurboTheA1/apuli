@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Apuli — Local Obsidian Companion</title>
   <link rel="icon" type="image/svg+xml" href="/static/apuli-icon.svg" />
-  <link rel="stylesheet" href="/static/styles.css?v=9" />
+  <link rel="stylesheet" href="/static/styles.css?v=10" />
 </head>
 <body>
   <div class="app-shell">
@@ -155,6 +155,7 @@
                 <span>Surface meaningful connections from my notes</span>
               </button>
             </div>
+            <div id="onThisDayBox" class="on-this-day-box hidden"></div>
           </div>
 
           <div class="messages-container" id="messagesContainer"></div>
@@ -234,6 +235,32 @@
             </form>
 
             <div class="memories-list" id="memoriesList"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>Vault Intelligence (Classic ML &amp; Graph · CPU)</h3>
+                <p class="muted small">Computed deterministically in milliseconds — discovered life clusters, relationship timeline, and monthly writing &amp; mood pulse.</p>
+              </div>
+              <button type="button" class="btn-ghost" id="refreshAnalyticsBtn">Refresh</button>
+            </div>
+
+            <div class="intel-section">
+              <h4>Discovered Life Themes (K-Means on Embeddings)</h4>
+              <div id="clustersGrid" class="clusters-grid"></div>
+            </div>
+
+            <div class="grid-two" style="margin-top: 16px;">
+              <div>
+                <h4>Relationship Timeline (<code>People/</code> + Mentions)</h4>
+                <div id="relationshipsList" class="rel-list"></div>
+              </div>
+              <div>
+                <h4>Monthly Journal &amp; Mood Pulse (TF-IDF + Valence)</h4>
+                <div id="timelinePulseBox" class="pulse-list"></div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -497,6 +524,6 @@
   </div>
 
   <div class="toast" id="toast"></div>
-  <script src="/static/app.js?v=9"></script>
+  <script src="/static/app.js?v=10"></script>
 </body>
 </html>

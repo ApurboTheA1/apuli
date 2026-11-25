@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .analytics import compute_vault_analytics, get_on_this_day, parse_temporal_filter
 from .config import DB_PATH, load_config, save_config
 from .db import (
     clear_vault_data,
@@ -49,7 +50,16 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 init_db(DB_PATH)
 set_ram_cache_enabled(load_config().enable_ram_cache)
 retriever = HybridRetriever(DB_PATH)
-indexer = VaultIndexer(load_config, DB_PATH, on_index_updated=retriever.reload_vectors)
+_analytics_cache: Optional[Dict[str, Any]] = None
+
+
+def _on_vault_index_updated() -> None:
+    global _analytics_cache
+    _analytics_cache = None
+    retriever.reload_vectors()
+
+
+indexer = VaultIndexer(load_config, DB_PATH, on_index_updated=_on_vault_index_updated)
 _index_task: Optional[asyncio.Task] = None
 _deep_task: Optional[asyncio.Task] = None
 _bg_tasks: set[asyncio.Task] = set()
@@ -359,6 +369,27 @@ async def serve_favicon():
     return FileResponse(icon_file, media_type="image/svg+xml")
 
 
+def _get_cached_analytics(cfg) -> Dict[str, Any]:
+    global _analytics_cache
+    if _analytics_cache is None:
+        raw = compute_vault_analytics(DB_PATH, cfg.journal_folders)
+        for item in raw.get("on_this_day", []):
+            item["obsidian_uri"] = _obsidian_uri(cfg.vault_path, item["note_path"])
+        for rel in raw.get("relationships", []):
+            rel["obsidian_uri"] = _obsidian_uri(cfg.vault_path, rel["note_path"])
+        for cl in raw.get("clusters", []):
+            for rep in cl.get("representative_notes", []):
+                rep["obsidian_uri"] = _obsidian_uri(cfg.vault_path, rep["note_path"])
+        _analytics_cache = raw
+    return _analytics_cache
+
+
+@app.get("/api/analytics")
+async def api_get_analytics():
+    cfg = load_config()
+    return _get_cached_analytics(cfg)
+
+
 @app.get("/api/status")
 async def get_status():
     cfg = load_config()
@@ -400,6 +431,10 @@ async def get_status():
         memory_count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
         chat_chunk_count = conn.execute("SELECT COUNT(*) FROM chat_chunks").fetchone()[0]
 
+    on_this_day = get_on_this_day(DB_PATH, cfg.journal_folders)
+    for item in on_this_day:
+        item["obsidian_uri"] = _obsidian_uri(cfg.vault_path, item["note_path"])
+
     return {
         "config": cfg.to_public_dict(),
         "needs_onboarding": not (cfg.vault_path and Path(cfg.vault_path).exists()),
@@ -414,6 +449,7 @@ async def get_status():
         "journal_candidates": journal_candidates,
         "indexed_folders": folder_counts,
         "recent_notes": recent_notes,
+        "on_this_day": on_this_day,
         "memory_count": memory_count,
         "chat_chunk_count": chat_chunk_count,
         "last_learned_at": _last_learned_at,
@@ -436,7 +472,7 @@ def _apply_vault_switch(cfg: AppConfig, old_vault: str) -> None:
         _index_task.cancel()
     if old_vault:
         clear_vault_data(DB_PATH)
-        retriever.reload_vectors()
+        _on_vault_index_updated()
         indexer._refresh_stats()
     _deep_status = {
         "state": "idle",
@@ -722,11 +758,20 @@ async def api_chat(conv_id: str, req: ChatReq):
         )
 
     history = get_conversation_messages(conv_id, DB_PATH)
+    temporal = parse_temporal_filter(user_text)
     retrieved, past_chats = await asyncio.gather(
         retriever.retrieve(user_text, cfg, folder_scope=folder_scope),
         retriever.retrieve_past_chats(user_text, cfg, exclude_conv_id=conv_id, top_k=3),
     )
-    system_prompt = build_system_prompt(cfg, mode, retrieved, past_chats=past_chats)
+    vault_intel = _get_cached_analytics(cfg)
+    system_prompt = build_system_prompt(
+        cfg,
+        mode,
+        retrieved,
+        past_chats=past_chats,
+        temporal_label=temporal["label"] if temporal else None,
+        vault_intel=vault_intel,
+    )
 
     ollama_messages = [{"role": "system", "content": system_prompt}]
     for m in history[-10:]:
