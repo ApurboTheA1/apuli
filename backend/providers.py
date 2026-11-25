@@ -226,7 +226,14 @@ async def provider_chat_stream(
     provider, model = parse_model_spec(model_spec, cfg.provider or "ollama")
 
     if provider == "ollama":
-        async for ev in ollama_chat_stream(cfg.ollama_url, model, messages, temperature):
+        async for ev in ollama_chat_stream(
+            cfg.ollama_url,
+            model,
+            messages,
+            temperature,
+            keep_alive=getattr(cfg, "ollama_keep_alive", "20m"),
+            num_thread=int(getattr(cfg, "ollama_num_thread", 0) or 0),
+        ):
             yield ev
         return
 
@@ -279,7 +286,15 @@ async def provider_chat_once(
     """Non-streaming completion via local Ollama (preferred) or active provider."""
     provider, model = parse_model_spec(model_spec, cfg.provider or "ollama")
     if provider == "ollama":
-        return await ollama_chat_once(cfg.ollama_url, model, messages, temperature, num_ctx=num_ctx)
+        return await ollama_chat_once(
+            cfg.ollama_url,
+            model,
+            messages,
+            temperature,
+            num_ctx=num_ctx,
+            keep_alive=getattr(cfg, "ollama_keep_alive", "20m"),
+            num_thread=int(getattr(cfg, "ollama_num_thread", 0) or 0),
+        )
 
     parts: List[str] = []
     async for ev_type, text in provider_chat_stream(cfg, model_spec, messages, temperature):

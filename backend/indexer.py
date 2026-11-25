@@ -310,8 +310,10 @@ class VaultIndexer:
             changed_notes: List[ParsedNote] = []
             mtime_only_updates: List[Tuple[float, str]] = []
             if to_parse:
-                workers = min(16, max(4, (os.cpu_count() or 4) * 2))
-                self.status.message = f"Parsing {len(to_parse)} notes across {workers} CPU threads..."
+                detected = os.cpu_count() or 4
+                requested = int(getattr(cfg, "parse_threads", 0) or 0)
+                workers = max(1, min(64, requested if requested > 0 else detected))
+                self.status.message = f"Parsing {len(to_parse)} notes across {workers} CPU thread{'s' if workers != 1 else ''}..."
                 loop = asyncio.get_running_loop()
                 with ThreadPoolExecutor(max_workers=workers) as pool:
                     parsed_results = await loop.run_in_executor(
@@ -380,7 +382,7 @@ class VaultIndexer:
             return
 
         self.status.state = "embedding"
-        batch_size = 48
+        batch_size = max(1, min(128, int(getattr(cfg, "embed_batch_size", 48) or 48)))
         for i in range(0, len(pending), batch_size):
             batch = pending[i : i + batch_size]
             self.status.message = (
@@ -390,7 +392,12 @@ class VaultIndexer:
                 f"Note: {r['title']} ({r['folder']})\nSection: {r['heading']}\n\n{r['content']}"
                 for r in batch
             ]
-            vectors = await embed_texts(cfg.ollama_url, cfg.embedding_model, texts)
+            vectors = await embed_texts(
+                cfg.ollama_url,
+                cfg.embedding_model,
+                texts,
+                keep_alive=getattr(cfg, "ollama_keep_alive", "20m"),
+            )
             if not vectors:
                 break
             with db_session(self._db_path) as conn:

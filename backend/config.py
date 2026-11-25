@@ -45,6 +45,11 @@ class AppConfig:
     enable_cross_chat_recall: bool = True
     ui_font: str = "system"
     font_size: int = 15
+    parse_threads: int = 0          # 0 = Auto (uses detected CPU threads)
+    embed_batch_size: int = 48      # Chunks per /api/embed batch (1..128)
+    enable_ram_cache: bool = True   # SQLite 256MB mmap + 64MB page cache
+    ollama_keep_alive: str = "20m"  # "0", "5m", "20m", "60m", "-1"
+    ollama_num_thread: int = 0      # 0 = Ollama auto; >0 caps CPU threads for Ollama
 
     # Optional Frontier / External API keys (kept local in data/config.json)
     openai_api_key: str = ""

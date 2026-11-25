@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Apuli — Local Obsidian Companion</title>
   <link rel="icon" type="image/svg+xml" href="/static/apuli-icon.svg" />
-  <link rel="stylesheet" href="/static/styles.css?v=8" />
+  <link rel="stylesheet" href="/static/styles.css?v=9" />
 </head>
 <body>
   <div class="app-shell">
@@ -387,7 +387,41 @@
 
               <div class="frontier-section" style="grid-column: 1 / -1;">
                 <details>
-                  <summary>☁️ Optional Frontier AI APIs (Only used if selected — keys stay in local <code>data/config.json</code>)</summary>
+                  <summary>Performance &amp; Hardware Allocation (CPU Threads, RAM Cache, Batching &amp; Model Warming)</summary>
+                  <div class="settings-grid" style="margin-top: 12px;">
+                    <label>
+                      <span id="parseThreadsLabel">Vault Parsing CPU Threads (0 = Auto)</span>
+                      <input type="number" min="0" max="64" id="setParseThreads" />
+                    </label>
+                    <label>
+                      <span id="ollamaThreadsLabel">Ollama CPU Thread Cap (0 = Auto)</span>
+                      <input type="number" min="0" max="64" id="setOllamaThreads" />
+                    </label>
+                    <label>
+                      <span>Embedding Batch Size (chunks per request)</span>
+                      <input type="number" min="1" max="128" id="setEmbedBatchSize" />
+                    </label>
+                    <label>
+                      <span>Ollama Model Keep-Alive (RAM/VRAM Warming)</span>
+                      <select id="setKeepAlive">
+                        <option value="0">Unload immediately after reply (0)</option>
+                        <option value="5m">5 minutes</option>
+                        <option value="20m">20 minutes (Recommended)</option>
+                        <option value="60m">1 hour</option>
+                        <option value="-1">Keep warm indefinitely (-1)</option>
+                      </select>
+                    </label>
+                    <label class="checkbox-inline">
+                      <input type="checkbox" id="setRamCache" />
+                      <span>Enable SQLite RAM cache (256 MB memory-mapped I/O + 64 MB page cache)</span>
+                    </label>
+                  </div>
+                </details>
+              </div>
+
+              <div class="frontier-section" style="grid-column: 1 / -1;">
+                <details>
+                  <summary>Optional Frontier AI APIs (Only used if selected — keys stay in local <code>data/config.json</code>)</summary>
                   <div class="settings-grid" style="margin-top: 12px;">
                     <label>
                       <span>OpenAI API Key</span>
@@ -463,6 +497,6 @@
   </div>
 
   <div class="toast" id="toast"></div>
-  <script src="/static/app.js?v=8"></script>
+  <script src="/static/app.js?v=9"></script>
 </body>
 </html>

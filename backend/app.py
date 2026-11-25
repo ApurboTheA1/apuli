@@ -26,6 +26,7 @@ from .db import (
     get_self_profile,
     init_db,
     list_conversations,
+    set_ram_cache_enabled,
     utc_now_iso,
 )
 from .hardware import detect_hardware, recommend_models
@@ -46,6 +47,7 @@ from .retrieval import HybridRetriever
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 init_db(DB_PATH)
+set_ram_cache_enabled(load_config().enable_ram_cache)
 retriever = HybridRetriever(DB_PATH)
 indexer = VaultIndexer(load_config, DB_PATH, on_index_updated=retriever.reload_vectors)
 _index_task: Optional[asyncio.Task] = None
@@ -259,6 +261,11 @@ class SettingsUpdate(BaseModel):
     enable_cross_chat_recall: Optional[bool] = None
     ui_font: Optional[str] = None
     font_size: Optional[int] = None
+    parse_threads: Optional[int] = None
+    embed_batch_size: Optional[int] = None
+    enable_ram_cache: Optional[bool] = None
+    ollama_keep_alive: Optional[str] = None
+    ollama_num_thread: Optional[int] = None
     openai_api_key: Optional[str] = None
     openai_model: Optional[str] = None
     anthropic_api_key: Optional[str] = None
@@ -553,6 +560,7 @@ async def update_settings(payload: SettingsUpdate):
             setattr(cfg, k, v)
     if cfg.vault_path:
         _record_recent_vault(cfg, cfg.vault_path)
+    set_ram_cache_enabled(cfg.enable_ram_cache)
     save_config(cfg)
 
     global _index_task

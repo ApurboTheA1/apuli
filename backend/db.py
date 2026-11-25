@@ -12,6 +12,14 @@ from typing import Any, Dict, Iterator, List, Optional
 from .config import DATA_DIR, DB_PATH
 
 
+_RAM_CACHE_ENABLED = True
+
+
+def set_ram_cache_enabled(enabled: bool) -> None:
+    global _RAM_CACHE_ENABLED
+    _RAM_CACHE_ENABLED = bool(enabled)
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -22,9 +30,13 @@ def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA cache_size=-65536;")
-    conn.execute("PRAGMA mmap_size=268435456;")
-    conn.execute("PRAGMA temp_store=MEMORY;")
+    if _RAM_CACHE_ENABLED:
+        conn.execute("PRAGMA cache_size=-65536;")
+        conn.execute("PRAGMA mmap_size=268435456;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+    else:
+        conn.execute("PRAGMA cache_size=-2000;")
+        conn.execute("PRAGMA mmap_size=0;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 

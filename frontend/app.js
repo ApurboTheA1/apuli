@@ -414,6 +414,15 @@ function renderSettingsPanel(data) {
   }
   $("setFontSize").value = cfg.font_size || 15;
 
+  const detectedCores = data.hardware?.cpu_cores || "?";
+  $("parseThreadsLabel").textContent = `Vault Parsing CPU Threads (0 = Auto · ${detectedCores} detected)`;
+  $("ollamaThreadsLabel").textContent = `Ollama CPU Thread Cap (0 = Auto · ${detectedCores} detected)`;
+  $("setParseThreads").value = cfg.parse_threads ?? 0;
+  $("setOllamaThreads").value = cfg.ollama_num_thread ?? 0;
+  $("setEmbedBatchSize").value = cfg.embed_batch_size ?? 48;
+  $("setKeepAlive").value = cfg.ollama_keep_alive ?? "20m";
+  $("setRamCache").checked = cfg.enable_ram_cache !== false;
+
   $("setOpenaiKey").value = cfg.openai_api_key || "";
   $("setOpenaiModel").value = cfg.openai_model || "gpt-4o-mini";
   $("setAnthropicKey").value = cfg.anthropic_api_key || "";
@@ -1295,6 +1304,11 @@ function bindEvents() {
         provider: $("setProvider").value,
         ui_font: chosenFont,
         font_size: parseInt($("setFontSize").value, 10) || 15,
+        parse_threads: parseInt($("setParseThreads").value, 10) || 0,
+        ollama_num_thread: parseInt($("setOllamaThreads").value, 10) || 0,
+        embed_batch_size: parseInt($("setEmbedBatchSize").value, 10) || 48,
+        ollama_keep_alive: $("setKeepAlive").value,
+        enable_ram_cache: $("setRamCache").checked,
         chat_model: $("setChatModel").value,
         memory_model: $("setMemoryModel").value,
         embedding_model: $("setEmbedModel").value.trim(),

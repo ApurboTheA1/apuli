@@ -17,6 +17,13 @@ EMBED_HINTS = (
 )
 
 
+def _parse_keep_alive(val: str) -> Any:
+    s = str(val or "20m").strip()
+    if s in ("0", "-1"):
+        return int(s)
+    return s
+
+
 def is_embedding_model(name: str) -> bool:
     lower = name.lower()
     return any(hint in lower for hint in EMBED_HINTS)
@@ -63,18 +70,22 @@ async def has_model(ollama_url: str, model_name: str) -> bool:
 
 
 async def embed_texts(
-    ollama_url: str, model: str, texts: List[str]
+    ollama_url: str,
+    model: str,
+    texts: List[str],
+    keep_alive: str = "20m",
 ) -> Optional[List[List[float]]]:
     """Generate embeddings via Ollama /api/embed. Returns None if unavailable."""
     if not texts:
         return []
     url = ollama_url.rstrip("/")
     safe_texts = [t[:3500] if len(t) > 3500 else t for t in texts]
+    ka = _parse_keep_alive(keep_alive)
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 f"{url}/api/embed",
-                json={"model": model, "input": safe_texts, "keep_alive": "20m"},
+                json={"model": model, "input": safe_texts, "keep_alive": ka},
             )
             if resp.status_code == 404:
                 # Fallback for older Ollama versions supporting /api/embeddings
@@ -82,7 +93,7 @@ async def embed_texts(
                 for item in safe_texts:
                     r2 = await client.post(
                         f"{url}/api/embeddings",
-                        json={"model": model, "prompt": item, "keep_alive": "20m"},
+                        json={"model": model, "prompt": item, "keep_alive": ka},
                     )
                     r2.raise_for_status()
                     vectors.append(r2.json()["embedding"])
@@ -121,6 +132,8 @@ async def chat_stream(
     model: str,
     messages: List[Dict[str, str]],
     temperature: float = 0.65,
+    keep_alive: str = "20m",
+    num_thread: int = 0,
 ) -> AsyncIterator[Tuple[str, str]]:
     """
     Stream chat responses from Ollama /api/chat.
@@ -128,15 +141,18 @@ async def chat_stream(
     Handles inline <think>...</think> blocks cleanly.
     """
     url = ollama_url.rstrip("/")
+    options: Dict[str, Any] = {
+        "temperature": temperature,
+        "num_ctx": 8192,
+    }
+    if num_thread and int(num_thread) > 0:
+        options["num_thread"] = int(num_thread)
     payload = {
         "model": model,
         "messages": messages,
         "stream": True,
-        "keep_alive": "20m",
-        "options": {
-            "temperature": temperature,
-            "num_ctx": 8192,
-        },
+        "keep_alive": _parse_keep_alive(keep_alive),
+        "options": options,
     }
 
     in_think = False
@@ -207,15 +223,20 @@ async def chat_once(
     messages: List[Dict[str, str]],
     temperature: float = 0.3,
     num_ctx: int = 8192,
+    keep_alive: str = "20m",
+    num_thread: int = 0,
 ) -> str:
     """Run a non-streaming chat completion and strip <think> blocks."""
     url = ollama_url.rstrip("/")
+    options: Dict[str, Any] = {"temperature": temperature, "num_ctx": num_ctx}
+    if num_thread and int(num_thread) > 0:
+        options["num_thread"] = int(num_thread)
     payload = {
         "model": model,
         "messages": messages,
         "stream": False,
-        "keep_alive": "20m",
-        "options": {"temperature": temperature, "num_ctx": num_ctx},
+        "keep_alive": _parse_keep_alive(keep_alive),
+        "options": options,
     }
     async with httpx.AsyncClient(timeout=180.0) as client:
         resp = await client.post(f"{url}/api/chat", json=payload)

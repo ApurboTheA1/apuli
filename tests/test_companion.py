@@ -510,3 +510,40 @@ def test_fs_folder_browser_detects_obsidian_vaults(tmp_path: Path):
         by_name = {f["name"]: f for f in data["folders"]}
         assert by_name["MyVault"]["is_vault"] is True
         assert by_name["OtherFolder"]["is_vault"] is False
+
+
+def test_configurable_performance_settings_and_ram_cache(tmp_path: Path):
+    from backend.db import get_connection, set_ram_cache_enabled
+
+    db_file = tmp_path / "perf.db"
+    init_db(db_file)
+
+    set_ram_cache_enabled(True)
+    conn_on = get_connection(db_file)
+    mmap_on = conn_on.execute("PRAGMA mmap_size;").fetchone()[0]
+    cache_on = conn_on.execute("PRAGMA cache_size;").fetchone()[0]
+    conn_on.close()
+    assert mmap_on >= 268435456
+    assert cache_on == -65536
+
+    set_ram_cache_enabled(False)
+    conn_off = get_connection(db_file)
+    mmap_off = conn_off.execute("PRAGMA mmap_size;").fetchone()[0]
+    cache_off = conn_off.execute("PRAGMA cache_size;").fetchone()[0]
+    conn_off.close()
+    assert mmap_off == 0
+    assert cache_off == -2000
+    set_ram_cache_enabled(True)
+
+    cfg = AppConfig(
+        parse_threads=0,
+        embed_batch_size=64,
+        enable_ram_cache=False,
+        ollama_keep_alive="60m",
+        ollama_num_thread=12,
+    )
+    pub = cfg.to_public_dict()
+    assert pub["parse_threads"] == 0
+    assert pub["embed_batch_size"] == 64
+    assert pub["ollama_keep_alive"] == "60m"
+    assert pub["ollama_num_thread"] == 12
