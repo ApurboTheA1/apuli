@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
@@ -437,18 +439,34 @@ def _apply_vault_switch(cfg: AppConfig, old_vault: str) -> None:
 
 @app.post("/api/vault/browse")
 async def api_browse_vault():
-    """Open native OS folder picker dialog locally so user can pick an Obsidian vault."""
+    """Open native OS folder picker dialog in a dedicated subprocess (main-thread safe)."""
+    script = (
+        "import tkinter as tk\n"
+        "from tkinter import filedialog\n"
+        "root = tk.Tk()\n"
+        "root.withdraw()\n"
+        "root.attributes('-topmost', True)\n"
+        "root.update()\n"
+        "p = filedialog.askdirectory(title='Select Obsidian Vault Folder')\n"
+        "root.destroy()\n"
+        "print(p or '', end='')\n"
+    )
+
     def _pick() -> dict:
         try:
-            import tkinter as tk
-            from tkinter import filedialog
-
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            selected = filedialog.askdirectory(title="Select Obsidian Vault Folder")
-            root.destroy()
-            return {"supported": True, "path": selected or ""}
+            proc = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if proc.returncode != 0:
+                return {
+                    "supported": False,
+                    "path": "",
+                    "error": proc.stderr.strip() or "Dialog unavailable",
+                }
+            return {"supported": True, "path": proc.stdout.strip()}
         except Exception as exc:
             return {"supported": False, "path": "", "error": str(exc)}
 

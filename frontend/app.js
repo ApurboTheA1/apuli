@@ -940,17 +940,21 @@ function bindEvents() {
     btn.onclick = () => sendMessage(btn.dataset.prompt);
   });
 
-  $("onboardBrowseBtn").onclick = async () => {
-    const res = await api("/api/vault/browse", { method: "POST" });
-    if (res.path) $("onboardVault").value = res.path;
-    else if (!res.supported) showToast("Folder dialog unavailable here — please paste the path.");
+  const handleBrowse = async (targetInput, btn) => {
+    btn.disabled = true;
+    try {
+      const res = await api("/api/vault/browse", { method: "POST" });
+      if (res.path) targetInput.value = res.path;
+      else if (!res.supported) showToast("Folder dialog unavailable here — please paste the path.");
+    } catch (err) {
+      showToast(`Browse failed: ${err.message}. If you updated Apuli, restart start.bat.`);
+    } finally {
+      btn.disabled = false;
+    }
   };
 
-  $("browseVaultBtn").onclick = async () => {
-    const res = await api("/api/vault/browse", { method: "POST" });
-    if (res.path) $("switchVaultInput").value = res.path;
-    else if (!res.supported) showToast("Folder dialog unavailable here — please paste the path.");
-  };
+  $("onboardBrowseBtn").onclick = () => handleBrowse($("onboardVault"), $("onboardBrowseBtn"));
+  $("browseVaultBtn").onclick = () => handleBrowse($("switchVaultInput"), $("browseVaultBtn"));
 
   $("switchVaultBtn").onclick = () => switchVaultTo($("switchVaultInput").value);
 
@@ -1033,23 +1037,35 @@ function bindEvents() {
   };
 
   $("deepSynthBtn").onclick = async () => {
-    await api("/api/self-profile/deep-start", { method: "POST" });
-    showToast("Reading your notes one by one in the background — feel free to explore.");
-    await loadStatus();
+    try {
+      await api("/api/self-profile/deep-start", { method: "POST" });
+      showToast("Reading your notes one by one in the background — feel free to explore.");
+      await loadStatus();
+    } catch (err) {
+      showToast(`Could not start deep read: ${err.message}`);
+    }
   };
 
   const stopDeep = async () => {
-    await api("/api/self-profile/deep-stop", { method: "POST" });
-    showToast("Paused background reading (all digested notes are saved).");
-    await loadStatus();
+    try {
+      await api("/api/self-profile/deep-stop", { method: "POST" });
+      showToast("Paused background reading (all digested notes are saved).");
+      await loadStatus();
+    } catch (err) {
+      showToast(`Could not pause: ${err.message}`);
+    }
   };
   $("deepStopBtn").onclick = stopDeep;
   $("bgStopDeepBtn").onclick = stopDeep;
 
   $("fullProcessBtn").onclick = async () => {
-    await api("/api/index?force_reembed=false&include_deep=true", { method: "POST" });
-    showToast("Full background vault processing started.");
-    await loadStatus();
+    try {
+      await api("/api/index?force_reembed=false&include_deep=true", { method: "POST" });
+      showToast("Full background vault processing started.");
+      await loadStatus();
+    } catch (err) {
+      showToast(`Could not start processing: ${err.message}`);
+    }
   };
 
   $("editProfileBtn").onclick = () => {
