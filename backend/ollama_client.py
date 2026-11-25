@@ -205,6 +205,7 @@ async def chat_once(
     model: str,
     messages: List[Dict[str, str]],
     temperature: float = 0.3,
+    num_ctx: int = 8192,
 ) -> str:
     """Run a non-streaming chat completion and strip <think> blocks."""
     url = ollama_url.rstrip("/")
@@ -212,7 +213,7 @@ async def chat_once(
         "model": model,
         "messages": messages,
         "stream": False,
-        "options": {"temperature": temperature, "num_ctx": 8192},
+        "options": {"temperature": temperature, "num_ctx": num_ctx},
     }
     async with httpx.AsyncClient(timeout=180.0) as client:
         resp = await client.post(f"{url}/api/chat", json=payload)

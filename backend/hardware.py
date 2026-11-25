@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import platform
+import re
 import shutil
 import subprocess
 from functools import lru_cache
@@ -271,4 +272,76 @@ def recommend_models(
         "summary": summary,
         "chat_recommendations": candidates,
         "embedding_recommendation": embed_rec,
+    }
+
+
+def _parse_model_billions(model_name: str) -> float:
+    m = re.search(r"(\d+(?:\.\d+)?)\s*b\b", model_name.lower())
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    return 7.0
+
+
+def compute_synthesis_budget(
+    provider: str,
+    model_name: str,
+    hw: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Determine optimal note batch size & context window for vault synthesis
+    based on the user's hardware and the active AI model's capabilities.
+    """
+    prov = (provider or "ollama").lower()
+    if prov in ("openai", "anthropic", "gemini"):
+        return {
+            "batch_max_notes": 30,
+            "batch_max_chars": 36000,
+            "per_note_cap": 3200,
+            "num_ctx": 32768,
+            "label": "Cloud Frontier (up to 30 notes/batch)",
+        }
+
+    info = hw or detect_hardware()
+    ram = float(info.get("ram_gb") or 8.0)
+    vram = float(info.get("vram_gb") or 0.0)
+    params_b = _parse_model_billions(model_name)
+
+    if params_b <= 4.5 or ram < 12:
+        return {
+            "batch_max_notes": 4,
+            "batch_max_chars": 3800,
+            "per_note_cap": 1100,
+            "num_ctx": 6144,
+            "label": "Compact Local (up to 4 notes/batch)",
+        }
+
+    if (vram >= 12 and ram >= 24) or (params_b >= 12 and ram >= 24) or (
+        info.get("gpu_kind") == "apple_silicon" and ram >= 24
+    ):
+        return {
+            "batch_max_notes": 16,
+            "batch_max_chars": 16000,
+            "per_note_cap": 2400,
+            "num_ctx": 16384,
+            "label": "High-Capacity Local (up to 16 notes/batch)",
+        }
+
+    if vram >= 7.5 or ram >= 24:
+        return {
+            "batch_max_notes": 10,
+            "batch_max_chars": 10500,
+            "per_note_cap": 1800,
+            "num_ctx": 12288,
+            "label": "GPU/High-RAM Local (up to 10 notes/batch)",
+        }
+
+    return {
+        "batch_max_notes": 7,
+        "batch_max_chars": 7000,
+        "per_note_cap": 1400,
+        "num_ctx": 8192,
+        "label": "Balanced Local (up to 7 notes/batch)",
     }

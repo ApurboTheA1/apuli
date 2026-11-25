@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 from datetime import datetime, timezone
@@ -17,8 +18,9 @@ from .db import (
     get_self_profile,
     utc_now_iso,
 )
+from .hardware import compute_synthesis_budget
 from .ollama_client import check_ollama
-from .providers import provider_chat_once
+from .providers import parse_model_spec, provider_chat_once
 from .retrieval import RetrievedChatChunk, RetrievedChunk
 
 _profile_lock = asyncio.Lock()
@@ -389,70 +391,13 @@ def _load_note_segments(
     return segments
 
 
-async def _digest_single_note(
+def _save_note_digest(
     note: Dict[str, str],
-    cfg: AppConfig,
+    digest: str,
+    is_personal: int,
     used_model: str,
     db_path: Path,
-    is_journal: bool = False,
-) -> Tuple[str, int]:
-    """Read an entire single note (across all its segments) and store its cached digest."""
-    segments = _load_note_segments(note["path"], db_path)
-    full_len = sum(len(s) for s in segments)
-    if full_len < 25:
-        digest = "REFERENCE_ONLY"
-        is_personal = 0
-    else:
-        part_summaries: List[str] = []
-        for idx, seg in enumerate(segments, start=1):
-            part_label = f" (Part {idx}/{len(segments)})" if len(segments) > 1 else ""
-            if is_journal:
-                prompt = (
-                    f"Read this personal journal / periodic reflection entry by {cfg.user_name}:\n"
-                    f"Path: {note['path']} | Date: {note['note_date']}{part_label}\n\n"
-                    f"{seg}\n\n"
-                    "Task:\n"
-                    "- Because this is a personal journal/daily/periodic note, pay close attention to emotional tone, "
-                    "inner voice, values, turning points, people mentioned, struggles, and recurring patterns.\n"
-                    "- Write 3–6 concise, specific bullet points capturing what this entry reveals about "
-                    f"{cfg.user_name}. Stay strictly grounded in the text."
-                )
-            else:
-                prompt = (
-                    f"Read this Obsidian note written by {cfg.user_name}:\n"
-                    f"Path: {note['path']} | Date: {note['note_date']} | Folder: {note['folder']}{part_label}\n\n"
-                    f"{seg}\n\n"
-                    "Task:\n"
-                    "- If this note contains anything personal (thoughts, feelings, self-reflection, values, struggles, "
-                    "relationships, life events, decisions, or creative/podcast ideas), write 2–5 concise, specific bullet points "
-                    f"capturing what it reveals about {cfg.user_name}.\n"
-                    "- If it is purely generic reference material (raw lecture notes, textbook definitions, code, or bare links) "
-                    "with zero personal insight, reply with exactly: REFERENCE_ONLY"
-                )
-            resp = await provider_chat_once(
-                cfg, used_model, [{"role": "user", "content": prompt}], temperature=0.2
-            )
-            cleaned = resp.strip()
-            if cleaned and (is_journal or "REFERENCE_ONLY" not in cleaned.upper()):
-                part_summaries.append(cleaned)
-
-        if not part_summaries:
-            digest = "REFERENCE_ONLY"
-            is_personal = 0
-        elif len(part_summaries) == 1:
-            digest = part_summaries[0]
-            is_personal = 1
-        else:
-            merge_prompt = (
-                f"Combine these section summaries of a single note ({note['path']}, {note['note_date']}) "
-                f"into 3–6 concise bullet points capturing what it reveals about {cfg.user_name}:\n\n"
-                + "\n\n".join(part_summaries)
-            )
-            digest = await provider_chat_once(
-                cfg, used_model, [{"role": "user", "content": merge_prompt}], temperature=0.2
-            )
-            is_personal = 1
-
+) -> None:
     now = utc_now_iso()
     with db_session(db_path) as conn:
         conn.execute(
@@ -481,7 +426,146 @@ async def _digest_single_note(
                 now,
             ),
         )
+
+
+async def _call_chat_once(
+    cfg: AppConfig,
+    used_model: str,
+    prompt: str,
+    temperature: float = 0.25,
+    num_ctx: int = 8192,
+) -> str:
+    sig = inspect.signature(provider_chat_once)
+    if "num_ctx" in sig.parameters:
+        return await provider_chat_once(
+            cfg, used_model, [{"role": "user", "content": prompt}],
+            temperature=temperature, num_ctx=num_ctx,
+        )
+    return await provider_chat_once(
+        cfg, used_model, [{"role": "user", "content": prompt}], temperature=temperature
+    )
+
+
+async def _digest_single_note(
+    note: Dict[str, str],
+    cfg: AppConfig,
+    used_model: str,
+    db_path: Path,
+    is_journal: bool = False,
+    num_ctx: int = 8192,
+) -> Tuple[str, int]:
+    """Read an entire single note (across all its segments) and store its cached digest."""
+    segments = _load_note_segments(note["path"], db_path)
+    full_len = sum(len(s) for s in segments)
+    if full_len < 25:
+        _save_note_digest(note, "REFERENCE_ONLY", 0, used_model, db_path)
+        return "REFERENCE_ONLY", 0
+
+    part_summaries: List[str] = []
+    for idx, seg in enumerate(segments, start=1):
+        part_label = f" (Part {idx}/{len(segments)})" if len(segments) > 1 else ""
+        if is_journal:
+            prompt = (
+                f"Read this personal journal / periodic reflection entry by {cfg.user_name}:\n"
+                f"Path: {note['path']} | Date: {note['note_date']}{part_label}\n\n"
+                f"{seg}\n\n"
+                "Task:\n"
+                "- Because this is a personal journal/daily/periodic note, pay close attention to emotional tone, "
+                "inner voice, values, turning points, people mentioned, struggles, and recurring patterns.\n"
+                "- Write 3–6 concise, specific bullet points capturing what this entry reveals about "
+                f"{cfg.user_name}. Stay strictly grounded in the text."
+            )
+        else:
+            prompt = (
+                f"Read this Obsidian note written by {cfg.user_name}:\n"
+                f"Path: {note['path']} | Date: {note['note_date']} | Folder: {note['folder']}{part_label}\n\n"
+                f"{seg}\n\n"
+                "Task:\n"
+                "- If this note contains anything personal (thoughts, feelings, self-reflection, values, struggles, "
+                "relationships, life events, decisions, or creative/podcast ideas), write 2–5 concise, specific bullet points "
+                f"capturing what it reveals about {cfg.user_name}.\n"
+                "- If it is purely generic reference material (raw lecture notes, textbook definitions, code, or bare links) "
+                "with zero personal insight, reply with exactly: REFERENCE_ONLY"
+            )
+        resp = await _call_chat_once(cfg, used_model, prompt, temperature=0.2, num_ctx=num_ctx)
+        cleaned = resp.strip()
+        if cleaned and (is_journal or "REFERENCE_ONLY" not in cleaned.upper()):
+            part_summaries.append(cleaned)
+
+    if not part_summaries:
+        digest, is_personal = "REFERENCE_ONLY", 0
+    elif len(part_summaries) == 1:
+        digest, is_personal = part_summaries[0], 1
+    else:
+        merge_prompt = (
+            f"Combine these section summaries of a single note ({note['path']}, {note['note_date']}) "
+            f"into 3–6 concise bullet points capturing what it reveals about {cfg.user_name}:\n\n"
+            + "\n\n".join(part_summaries)
+        )
+        digest = await _call_chat_once(cfg, used_model, merge_prompt, temperature=0.2, num_ctx=num_ctx)
+        is_personal = 1
+
+    _save_note_digest(note, digest, is_personal, used_model, db_path)
     return digest, is_personal
+
+
+async def _digest_note_batch(
+    batch: List[Tuple[Dict[str, str], bool, str]],
+    cfg: AppConfig,
+    used_model: str,
+    num_ctx: int,
+    db_path: Path,
+) -> None:
+    """Process a batch of notes in a single model call and persist each note's digest."""
+    if len(batch) == 1:
+        note, is_j, _ = batch[0]
+        await _digest_single_note(note, cfg, used_model, db_path, is_journal=is_j, num_ctx=num_ctx)
+        return
+
+    entries = []
+    for idx, (note, is_j, text) in enumerate(batch, start=1):
+        kind = "JOURNAL" if is_j else note["folder"]
+        entries.append(f"[{idx}] ({kind} · {note['note_date']}) {note['path']}\n{text}")
+
+    prompt = (
+        f"Analyze these {len(batch)} chronological Obsidian notes by {cfg.user_name}.\n"
+        "For EACH numbered note [1]..[{n}], write 1–3 concise, specific sentences capturing what it reveals "
+        f"about {cfg.user_name} (emotional tone, values, struggles, relationships, decisions, or creative projects).\n"
+        "Rules:\n"
+        "- For any note marked JOURNAL, NEVER skip it — capture its personal meaning.\n"
+        "- For non-journal notes that are purely generic reference/textbook/code with zero personal insight, set their value to \"REFERENCE_ONLY\".\n"
+        "- Return ONLY a valid JSON object mapping each string index \"1\"..\"{n}\" to its summary string.\n\n"
+        + "\n\n---\n\n".join(entries)
+    ).replace("{n}", str(len(batch)))
+
+    raw = await _call_chat_once(cfg, used_model, prompt, temperature=0.2, num_ctx=num_ctx)
+    parsed: Dict[str, Any] = {}
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        try:
+            loaded = json.loads(m.group(0))
+            if isinstance(loaded, dict):
+                parsed = loaded
+        except Exception:
+            parsed = {}
+
+    if parsed:
+        for idx, (note, is_j, _) in enumerate(batch, start=1):
+            val = str(parsed.get(str(idx), "")).strip()
+            if not val or (not is_j and "REFERENCE_ONLY" in val.upper()):
+                _save_note_digest(note, "REFERENCE_ONLY", 0, used_model, db_path)
+            else:
+                _save_note_digest(note, val, 1, used_model, db_path)
+    else:
+        # Fallback if a small model answered in plain prose instead of JSON
+        cleaned = raw.strip()
+        for idx, (note, is_j, _) in enumerate(batch):
+            if idx == 0 and cleaned:
+                _save_note_digest(note, cleaned, 1, used_model, db_path)
+            elif is_j and cleaned:
+                _save_note_digest(note, f"(Grouped reflection) {cleaned[:350]}", 1, used_model, db_path)
+            else:
+                _save_note_digest(note, "REFERENCE_ONLY", 0, used_model, db_path)
 
 
 async def deep_synthesize_self_profile_stream(
@@ -490,12 +574,14 @@ async def deep_synthesize_self_profile_stream(
     db_path: Path = DB_PATH,
 ) -> AsyncIterator[Dict[str, Any]]:
     """
-    Walk through EVERY indexed note in the vault ONE BY ONE in chronological order,
-    caching each note's digest in SQLite so progress is resumable and future updates
-    only inspect new/edited notes, then weave all insights into a complete Self-Portrait.
+    Walk through EVERY indexed note in the vault chronologically in adaptive batches
+    sized to the user's hardware and AI model capabilities, caching per-note digests in
+    SQLite so progress is resumable and future updates only read new/edited notes.
     """
     async with _profile_lock:
         used_model = model or cfg.memory_model or cfg.chat_model
+        prov, mod_name = parse_model_spec(used_model, cfg.provider or "ollama")
+        budget = compute_synthesis_budget(prov, mod_name)
 
         with db_session(db_path) as conn:
             note_rows = conn.execute(
@@ -526,7 +612,7 @@ async def deep_synthesize_self_profile_stream(
             yield {"stage": "error", "error": "No indexed notes found in the vault yet."}
             return
 
-        to_digest = []
+        to_digest: List[Tuple[Dict[str, str], bool]] = []
         reused = 0
         for n in notes_list:
             is_j = is_in_folders(n["path"], cfg.journal_folders)
@@ -542,22 +628,66 @@ async def deep_synthesize_self_profile_stream(
                 "notes_processed": reused,
                 "total_notes": total_notes,
                 "cached_notes": reused,
-                "message": f"Resuming — {reused}/{total_notes} unchanged notes already digested; reading {len(to_digest)} remaining one by one…",
+                "message": f"Resuming — {reused}/{total_notes} cached; processing {len(to_digest)} remaining ({budget['label']})…",
             }
 
-        processed = reused
+        # Pack remaining notes into adaptive batches matched to hardware + model
+        batches: List[List[Tuple[Dict[str, str], bool, str]]] = []
+        cur_batch: List[Tuple[Dict[str, str], bool, str]] = []
+        cur_chars = 0
+        per_note_cap = int(budget["per_note_cap"])
+        batch_max_chars = int(budget["batch_max_chars"])
+        batch_max_notes = int(budget["batch_max_notes"])
+
         for n, is_j in to_digest:
-            processed += 1
-            tag = "★ Journal" if is_j else n["folder"]
+            segs = _load_note_segments(n["path"], db_path, max_segment_chars=per_note_cap)
+            full_text = "\n\n".join(segs).strip()
+            if len(full_text) < 25:
+                _save_note_digest(n, "REFERENCE_ONLY", 0, used_model, db_path)
+                reused += 1
+                continue
+
+            # Very long journal notes get dedicated full-note digestion so nothing is truncated
+            if is_j and len(full_text) > per_note_cap * 1.4:
+                if cur_batch:
+                    batches.append(cur_batch)
+                    cur_batch = []
+                    cur_chars = 0
+                batches.append([(n, is_j, full_text)])
+                continue
+
+            clipped = full_text[:per_note_cap]
+            entry_len = len(clipped) + len(n["path"]) + 60
+            if cur_batch and (
+                len(cur_batch) >= batch_max_notes or cur_chars + entry_len > batch_max_chars
+            ):
+                batches.append(cur_batch)
+                cur_batch = []
+                cur_chars = 0
+            cur_batch.append((n, is_j, clipped))
+            cur_chars += entry_len
+
+        if cur_batch:
+            batches.append(cur_batch)
+
+        processed = reused
+        for b_idx, batch in enumerate(batches, start=1):
+            first_date = batch[0][0]["note_date"]
+            last_date = batch[-1][0]["note_date"]
+            processed += len(batch)
             yield {
                 "stage": "reading",
                 "notes_processed": processed,
                 "total_notes": total_notes,
                 "cached_notes": reused,
-                "current_note": n["path"],
-                "message": f"Reading {processed}/{total_notes} ({tag} · {n['note_date']}) · {n['path']}",
+                "batch": b_idx,
+                "total_batches": len(batches),
+                "message": (
+                    f"Reading {processed}/{total_notes} ({first_date} → {last_date}, "
+                    f"batch {b_idx}/{len(batches)} · {budget['label']})"
+                ),
             }
-            await _digest_single_note(n, cfg, used_model, db_path, is_journal=is_j)
+            await _digest_note_batch(batch, cfg, used_model, int(budget["num_ctx"]), db_path)
 
         # Gather all digested insights chronologically, separating Journal Gold vs Supporting Vault
         with db_session(db_path) as conn:

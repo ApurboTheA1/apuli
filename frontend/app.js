@@ -188,7 +188,7 @@ async function loadStatus() {
       $("bgStopDeepBtn").classList.add("hidden");
     } else {
       $("bgProgressLabel").textContent =
-        deep.state === "reducing" ? "Weaving Self-Portrait" : "Learning Notes (1 by 1)";
+        deep.state === "reducing" ? "Weaving Self-Portrait" : "Learning Vault";
       $("bgProgressMsg").textContent = deep.message || "Reading notes…";
       const pct = deep.total_notes ? Math.round((deep.notes_processed / deep.total_notes) * 100) : 10;
       $("bgProgressBar").style.width = `${Math.max(4, Math.min(100, pct))}%`;

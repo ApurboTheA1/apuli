@@ -274,11 +274,12 @@ async def provider_chat_once(
     model_spec: str,
     messages: List[Dict[str, str]],
     temperature: float = 0.3,
+    num_ctx: int = 8192,
 ) -> str:
     """Non-streaming completion via local Ollama (preferred) or active provider."""
     provider, model = parse_model_spec(model_spec, cfg.provider or "ollama")
     if provider == "ollama":
-        return await ollama_chat_once(cfg.ollama_url, model, messages, temperature)
+        return await ollama_chat_once(cfg.ollama_url, model, messages, temperature, num_ctx=num_ctx)
 
     parts: List[str] = []
     async for ev_type, text in provider_chat_stream(cfg, model_spec, messages, temperature):

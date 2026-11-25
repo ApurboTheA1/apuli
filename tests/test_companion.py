@@ -321,8 +321,10 @@ def test_deep_whole_vault_synthesis(tmp_path: Path, monkeypatch):
     async def fake_provider_chat_once(cfg_arg, model_spec, messages, temperature=0.3):
         p = messages[0]["content"]
         prompts_seen.append(p)
-        if "Chronological Vault Synthesis" in p:
+        if "Chronological Vault Synthesis" in p or "CORE JOURNAL" in p or "SUPPORTING VAULT" in p:
             return "### Core Identity & Values\nConsistent growth across 2024–2026."
+        if "Analyze these" in p:
+            return '{"1": "Early reflection on purpose.", "2": "REFERENCE_ONLY", "3": "Deep personal insight."}'
         if "Process scheduling algorithm" in p:
             return "REFERENCE_ONLY"
         return "- Personal growth and reflection noted."
@@ -339,23 +341,21 @@ def test_deep_whole_vault_synthesis(tmp_path: Path, monkeypatch):
     assert events[-1]["stage"] == "done"
     assert events[-1]["total_notes"] == 3
 
-    # Verify chronological note-by-note reading order (2024-01-10 -> 2024-06-15 -> 2026-02-20)
-    read_prompts = [p for p in prompts_seen if "Read this Obsidian note" in p]
-    assert len(read_prompts) == 3
-    assert "2024-01-10" in read_prompts[0]
-    assert "2024-06-15" in read_prompts[1]
-    assert "2026-02-20" in read_prompts[2]
+    # Verify adaptive batching packed all 3 notes chronologically into 1 batch call + 1 final synthesis call
+    batch_prompts = [p for p in prompts_seen if "Analyze these 3 chronological" in p]
+    assert len(batch_prompts) == 1
+    assert batch_prompts[0].index("2024-01-10") < batch_prompts[0].index("2024-06-15") < batch_prompts[0].index("2026-02-20")
 
     stored = get_self_profile(db_file)
     assert stored is not None
     assert stored["is_deep"] == 1
     assert stored["notes_covered"] == 3
 
-    # Second run with no note changes should reuse all 3 cached digests (0 new read calls)
+    # Second run with no note changes should reuse all 3 cached digests (0 new batch calls)
     prompts_seen.clear()
     events2 = asyncio.run(run_stream())
     assert events2[-1]["stage"] == "done"
-    assert [p for p in prompts_seen if "Read this Obsidian note" in p] == []
+    assert [p for p in prompts_seen if "Analyze these" in p or "Read this" in p] == []
 
     # Switching vaults via clear_vault_data removes old notes, digests, and self_profile
     from backend.db import clear_vault_data, db_session
@@ -425,6 +425,8 @@ def test_journal_folders_discovery_scope_and_deep_priority(tmp_path: Path, monke
         seen.append(p)
         if "CORE JOURNAL & PERIODIC REFLECTIONS" in p:
             return "### Core Identity & Values\nDeeply grounded in journals."
+        if "Analyze these" in p:
+            return '{"1": "Values creativity and family.", "2": "REFERENCE_ONLY"}'
         return "- Values creativity and family."
 
     monkeypatch.setattr(memory_mod, "provider_chat_once", fake_chat_once)
@@ -437,8 +439,21 @@ def test_journal_folders_discovery_scope_and_deep_priority(tmp_path: Path, monke
 
     events = asyncio.run(run_deep())
     assert events[-1]["stage"] == "done"
-    assert any("personal journal / periodic reflection entry" in p for p in seen)
+    assert any("JOURNAL" in p for p in seen)
     assert any("CORE JOURNAL & PERIODIC REFLECTIONS" in p for p in seen)
+
+
+def test_adaptive_synthesis_budget_scales_with_hardware_and_model():
+    from backend.hardware import compute_synthesis_budget
+
+    cloud = compute_synthesis_budget("gemini", "gemini-2.5-flash")
+    assert cloud["batch_max_notes"] == 30
+
+    rtx4060 = compute_synthesis_budget("ollama", "qwen2.5:7b", {"ram_gb": 60.0, "vram_gb": 8.0, "gpu_kind": "nvidia"})
+    assert rtx4060["batch_max_notes"] == 10
+
+    small = compute_synthesis_budget("ollama", "llama3.2:3b", {"ram_gb": 8.0, "vram_gb": 0.0, "gpu_kind": "cpu"})
+    assert small["batch_max_notes"] == 4
 
 
 def test_vault_switch_endpoint_validation_and_recent_vaults(tmp_path: Path, monkeypatch):
