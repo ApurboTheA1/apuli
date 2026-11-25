@@ -43,6 +43,8 @@ class AppConfig:
     auto_learn: bool = True
     auto_distill_turns: int = 2
     enable_cross_chat_recall: bool = True
+    ui_font: str = "system"
+    font_size: int = 15
 
     # Optional Frontier / External API keys (kept local in data/config.json)
     openai_api_key: str = ""

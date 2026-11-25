@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Apuli — Local Obsidian Companion</title>
-  <link rel="stylesheet" href="/static/styles.css?v=5" />
+  <link rel="stylesheet" href="/static/styles.css?v=6" />
 </head>
 <body>
   <div class="app-shell">
@@ -335,6 +335,25 @@
                   <option value="openai_compatible">Custom OpenAI-Compatible Endpoint</option>
                 </select>
               </label>
+              <label>
+                <span>Interface &amp; Reading Font</span>
+                <select id="setFontPreset">
+                  <option value="system">System Default (Clean Sans + Serif)</option>
+                  <option value="Source Code Pro">Source Code Pro (Bundled Offline)</option>
+                  <option value="JetBrainsMono Nerd Font">JetBrains Mono Nerd Font (Local)</option>
+                  <option value="Cascadia Code">Cascadia Code (Local)</option>
+                  <option value="Inter">Inter (Local)</option>
+                  <option value="Georgia">Georgia Editorial Serif</option>
+                  <option value="__custom__">Custom Font Family…</option>
+                </select>
+              </label>
+              <label>
+                <span>Custom Font Family &amp; Size (px)</span>
+                <div style="display:flex; gap:6px;">
+                  <input type="text" id="setCustomFont" placeholder="Any installed font, e.g. Fira Code" style="flex:1;" />
+                  <input type="number" min="12" max="20" id="setFontSize" style="width:74px;" />
+                </div>
+              </label>
               <label class="checkbox-inline">
                 <input type="checkbox" id="setGraphExpand" />
                 <span>Follow <code>[[wikilinks]]</code> between notes for extra context</span>
@@ -426,6 +445,6 @@
   </div>
 
   <div class="toast" id="toast"></div>
-  <script src="/static/app.js?v=5"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>

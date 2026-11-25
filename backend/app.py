@@ -257,6 +257,8 @@ class SettingsUpdate(BaseModel):
     auto_learn: Optional[bool] = None
     auto_distill_turns: Optional[int] = None
     enable_cross_chat_recall: Optional[bool] = None
+    ui_font: Optional[str] = None
+    font_size: Optional[int] = None
     openai_api_key: Optional[str] = None
     openai_model: Optional[str] = None
     anthropic_api_key: Optional[str] = None

@@ -102,11 +102,39 @@ function updateModelPrivacyHint() {
   }
 }
 
+const FONT_PRESETS = new Set([
+  "system",
+  "Source Code Pro",
+  "JetBrainsMono Nerd Font",
+  "Cascadia Code",
+  "Inter",
+  "Georgia",
+]);
+
+function applyFontSetting(uiFont, fontSize) {
+  const root = document.documentElement;
+  const f = (uiFont || "system").trim();
+  const sz = Math.min(20, Math.max(12, Number(fontSize) || 15));
+  root.style.setProperty("--font-size", `${sz}px`);
+
+  if (!f || f === "system") {
+    root.style.setProperty("--font-sans", '"Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif');
+    root.style.setProperty("--font-serif", 'Georgia, "Times New Roman", serif');
+    root.style.setProperty("--font-mono", '"Source Code Pro", Consolas, monospace');
+  } else {
+    const safe = f.includes(",") ? f : `"${f.replace(/"/g, "")}"`;
+    root.style.setProperty("--font-sans", `${safe}, "Segoe UI", sans-serif`);
+    root.style.setProperty("--font-serif", `${safe}, Georgia, serif`);
+    root.style.setProperty("--font-mono", `${safe}, "Source Code Pro", Consolas, monospace`);
+  }
+}
+
 async function loadStatus() {
   const data = await api("/api/status");
   state.status = data;
 
   const cfg = data.config;
+  applyFontSetting(cfg.ui_font, cfg.font_size);
   $("brandTitle").textContent = cfg.companion_name || "Apuli";
   $("welcomeHeading").textContent = `Hey ${cfg.user_name && cfg.user_name !== "Friend" ? cfg.user_name : "there"}, I’m here.`;
 
@@ -371,6 +399,16 @@ function renderSettingsPanel(data) {
   $("setCrossChat").checked = cfg.enable_cross_chat_recall !== false;
   $("setAutoTurns").value = cfg.auto_distill_turns ?? 2;
   $("setProvider").value = cfg.provider || "ollama";
+
+  const activeFont = cfg.ui_font || "system";
+  if (FONT_PRESETS.has(activeFont)) {
+    $("setFontPreset").value = activeFont;
+    $("setCustomFont").value = activeFont === "system" ? "" : activeFont;
+  } else {
+    $("setFontPreset").value = "__custom__";
+    $("setCustomFont").value = activeFont;
+  }
+  $("setFontSize").value = cfg.font_size || 15;
 
   $("setOpenaiKey").value = cfg.openai_api_key || "";
   $("setOpenaiModel").value = cfg.openai_model || "gpt-4o-mini";
@@ -1196,6 +1234,30 @@ function bindEvents() {
     setTimeout(loadStatus, 1000);
   };
 
+  $("setFontPreset").onchange = () => {
+    const val = $("setFontPreset").value;
+    if (val !== "__custom__") {
+      $("setCustomFont").value = val === "system" ? "" : val;
+      applyFontSetting(val, $("setFontSize").value);
+    }
+  };
+  $("setCustomFont").oninput = () => {
+    const custom = $("setCustomFont").value.trim();
+    if (custom) {
+      $("setFontPreset").value = FONT_PRESETS.has(custom) ? custom : "__custom__";
+      applyFontSetting(custom, $("setFontSize").value);
+    } else {
+      $("setFontPreset").value = "system";
+      applyFontSetting("system", $("setFontSize").value);
+    }
+  };
+  $("setFontSize").oninput = () => {
+    const chosen = $("setFontPreset").value === "__custom__"
+      ? ($("setCustomFont").value.trim() || "system")
+      : $("setFontPreset").value;
+    applyFontSetting(chosen, $("setFontSize").value);
+  };
+
   $("settingsForm").onsubmit = async (e) => {
     e.preventDefault();
     const excluded = [];
@@ -1211,6 +1273,9 @@ function bindEvents() {
       .map((s) => s.trim())
       .filter(Boolean)
       .forEach((p) => journalSet.add(p));
+    const chosenFont = $("setFontPreset").value === "__custom__"
+      ? ($("setCustomFont").value.trim() || "system")
+      : ($("setCustomFont").value.trim() || $("setFontPreset").value || "system");
     await api("/api/settings", {
       method: "POST",
       body: JSON.stringify({
@@ -1218,6 +1283,8 @@ function bindEvents() {
         companion_name: $("setCompanionName").value.trim(),
         ollama_url: $("setOllamaUrl").value.trim(),
         provider: $("setProvider").value,
+        ui_font: chosenFont,
+        font_size: parseInt($("setFontSize").value, 10) || 15,
         chat_model: $("setChatModel").value,
         memory_model: $("setMemoryModel").value,
         embedding_model: $("setEmbedModel").value.trim(),
