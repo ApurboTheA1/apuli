@@ -154,7 +154,7 @@ async def distill_memories_from_conversation(
             "Conversation:\n" + "\n".join(transcript_lines)
         )
 
-        used_model = model or cfg.chat_model
+        used_model = model or cfg.memory_model or cfg.chat_model
         raw = await provider_chat_once(
             cfg,
             used_model,
@@ -314,7 +314,7 @@ async def synthesize_self_profile(
             "Note Samples:\n" + ("\n".join(samples) if samples else "(no notes indexed yet)")
         )
 
-        used_model = model or cfg.chat_model
+        used_model = model or cfg.memory_model or cfg.chat_model
         summary = await provider_chat_once(
             cfg,
             used_model,

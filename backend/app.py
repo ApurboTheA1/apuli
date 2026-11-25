@@ -100,7 +100,9 @@ async def _background_learn_after_turn(
             created_at=created_at,
             cfg=cfg,
         )
-        saved = await maybe_auto_distill(conv_id, cfg, model=model, db_path=DB_PATH)
+        saved = await maybe_auto_distill(
+            conv_id, cfg, model=cfg.memory_model or model, db_path=DB_PATH
+        )
         if saved:
             _last_learned_at = utc_now_iso()
         profile_res = await maybe_evolve_self_profile(cfg, DB_PATH)
@@ -142,6 +144,7 @@ class SettingsUpdate(BaseModel):
     ollama_url: Optional[str] = None
     provider: Optional[str] = None
     chat_model: Optional[str] = None
+    memory_model: Optional[str] = None
     embedding_model: Optional[str] = None
     excluded_folders: Optional[List[str]] = None
     user_name: Optional[str] = None
@@ -585,7 +588,9 @@ async def api_chat(conv_id: str, req: ChatReq):
 @app.post("/api/conversations/{conv_id}/distill")
 async def api_distill(conv_id: str):
     cfg = load_config()
-    saved = await distill_memories_from_conversation(conv_id, cfg)
+    saved = await distill_memories_from_conversation(
+        conv_id, cfg, model=cfg.memory_model or None
+    )
     return {"saved": saved, "memories": get_memories(DB_PATH)}
 
 

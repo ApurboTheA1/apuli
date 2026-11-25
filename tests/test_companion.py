@@ -241,15 +241,48 @@ def test_hardware_recommendations_and_provider_masking():
     assert perf["embedding_recommendation"]["installed"] is True
     qwen = next(m for m in perf["chat_recommendations"] if m["name"] == "qwen2.5:7b")
     assert qwen["installed"] is True
+    assert any(m["name"] == "dolphin-llama3:8b" for m in perf["chat_recommendations"])
 
     cfg = AppConfig(
+        chat_model="dolphin-llama3:8b",
+        memory_model="qwen2.5:7b",
         openai_api_key="sk-secret-test-key-1234",
         openai_model="gpt-4o-mini",
     )
     pub = cfg.to_public_dict()
     assert pub["has_openai_key"] is True
+    assert pub["memory_model"] == "qwen2.5:7b"
     assert "sk-secret" not in pub["openai_api_key"]
 
-    models = list_provider_models(cfg, {"chat_models": ["qwen2.5:7b"]})
+    models = list_provider_models(cfg, {"chat_models": ["qwen2.5:7b", "dolphin-llama3:8b"]})
     assert models[0]["is_local"] is True
     assert any(m["provider"] == "openai" and not m["is_local"] for m in models)
+
+
+def test_memory_model_override_used_for_distillation(tmp_path: Path, monkeypatch):
+    from backend import memory as memory_mod
+    from backend.db import db_session
+
+    db_file = tmp_path / "mem_override.db"
+    init_db(db_file)
+    with db_session(db_file) as conn:
+        conn.execute(
+            "INSERT INTO conversations (id, title, mode, model, folder_scope, created_at, updated_at) VALUES ('c1', 'Chat', 'companion', 'dolphin-llama3:8b', 'all', '2026-11-20', '2026-11-20')"
+        )
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, created_at) VALUES ('c1', 'user', 'Hello', '2026-11-20')"
+        )
+        conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, created_at) VALUES ('c1', 'assistant', 'Hi there', '2026-11-20')"
+        )
+
+    seen_models = []
+
+    async def fake_provider_chat_once(cfg, model_spec, messages, temperature=0.3):
+        seen_models.append(model_spec)
+        return "[]"
+
+    monkeypatch.setattr(memory_mod, "provider_chat_once", fake_provider_chat_once)
+    cfg = AppConfig(chat_model="dolphin-llama3:8b", memory_model="qwen2.5:7b")
+    asyncio.run(memory_mod.distill_memories_from_conversation("c1", cfg, db_path=db_file))
+    assert seen_models == ["qwen2.5:7b"]

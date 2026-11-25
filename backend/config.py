@@ -29,6 +29,7 @@ class AppConfig:
     ollama_url: str = "http://127.0.0.1:11434"
     provider: str = "ollama"  # ollama | openai | anthropic | gemini | openai_compatible
     chat_model: str = "qwen2.5:7b"
+    memory_model: str = ""  # Optional dedicated model for memory distillation & self-portrait
     embedding_model: str = "nomic-embed-text"
     excluded_folders: List[str] = field(default_factory=list)
     user_name: str = "Friend"

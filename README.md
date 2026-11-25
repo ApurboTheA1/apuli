@@ -78,8 +78,10 @@ Apuli inspects your system locally and recommends a tier automatically:
 | Hardware Tier | Typical Specs | Suggested Local Models |
 | :--- | :--- | :--- |
 | **Lightweight** | ~8 GB RAM, CPU / iGPU | `llama3.2:3b`, `qwen2.5:3b` |
-| **Balanced** | 16 GB+ RAM or 6–8 GB VRAM | `qwen2.5:7b`, `llama3.1:8b`, `deepseek-r1:7b` |
-| **Performance** | 32 GB+ RAM & 12 GB+ VRAM / Apple Silicon 24 GB+ | `qwen2.5:14b`, `deepseek-r1:14b`, `gemma2:9b` |
+| **Balanced** | 16 GB+ RAM or 6–8 GB VRAM | `qwen2.5:7b`, `dolphin-llama3:8b`, `llama3.1:8b`, `deepseek-r1:7b` |
+| **Performance** | 32 GB+ RAM & 12 GB+ VRAM / Apple Silicon 24 GB+ | `qwen2.5:14b`, `deepseek-r1:14b`, `dolphin-llama3:8b` |
+
+> **Tip — Unfiltered Voice + Accurate Memory:** Want candid, non-preachy conversations without sacrificing structured memory extraction? Chat with a low-refusal model like `dolphin-llama3:8b` and set **Background Memory Model** in Settings to `qwen2.5:7b` (or `qwen2.5:14b`) so memory distillation and Self-Portrait synthesis stay sharp.
 
 *(If you have no local GPU or want cloud frontier reasoning on a specific question, configure an optional API key under **Optional Frontier AI APIs** in Settings — API keys stay strictly inside your local `data/config.json`, which is gitignored.)*
 

@@ -218,6 +218,14 @@ async function loadStatus() {
     .join("");
   $("setChatModel").value = cfg.chat_model;
 
+  // Background Memory Model select (optional split between unfiltered voice & structured memory)
+  const memChoices = [
+    `<option value="">Same as active chat model</option>`,
+    ...pModels.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.label)}</option>`),
+  ];
+  $("setMemoryModel").innerHTML = memChoices.join("");
+  $("setMemoryModel").value = cfg.memory_model || "";
+
   // Folder scope selector
   const scopeSelect = $("folderScopeSelect");
   const prevScope = scopeSelect.value || "all";
@@ -913,6 +921,7 @@ function bindEvents() {
         ollama_url: $("setOllamaUrl").value.trim(),
         provider: $("setProvider").value,
         chat_model: $("setChatModel").value,
+        memory_model: $("setMemoryModel").value,
         embedding_model: $("setEmbedModel").value.trim(),
         temperature: parseFloat($("setTemp").value),
         top_k_chunks: parseInt($("setTopK").value, 10),

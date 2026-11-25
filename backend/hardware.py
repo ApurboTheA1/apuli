@@ -144,6 +144,13 @@ def recommend_models(
                     "reason": "Step-by-step reasoning across timelines and life patterns.",
                     "recommended": False,
                 },
+                {
+                    "name": "dolphin-llama3:8b",
+                    "role": "Unfiltered Voice",
+                    "size": "~4.7 GB",
+                    "reason": "Low-refusal, non-preachy companion for raw, candid journaling.",
+                    "recommended": False,
+                },
             ]
         else:
             # 8 GB VRAM + 32+ GB RAM (e.g., RTX 4060 8GB + 64GB RAM)
@@ -158,6 +165,13 @@ def recommend_models(
                     "size": "~4.7 GB",
                     "reason": "Fits completely in 8 GB VRAM for fast streaming and accurate vault recall.",
                     "recommended": True,
+                },
+                {
+                    "name": "dolphin-llama3:8b",
+                    "role": "Unfiltered Voice",
+                    "size": "~4.7 GB",
+                    "reason": "Low-refusal fine-tune for candid, non-preachy reflection and journaling.",
+                    "recommended": False,
                 },
                 {
                     "name": "llama3.1:8b",
@@ -195,6 +209,13 @@ def recommend_models(
                 "size": "~4.7 GB",
                 "reason": "Strong instruction following and clean citations on 16 GB systems.",
                 "recommended": True,
+            },
+            {
+                "name": "dolphin-llama3:8b",
+                "role": "Unfiltered Voice",
+                "size": "~4.7 GB",
+                "reason": "Low-refusal fine-tune for candid, non-preachy reflection and journaling.",
+                "recommended": False,
             },
             {
                 "name": "llama3.2:3b",
