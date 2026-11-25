@@ -1,32 +1,40 @@
 @font-face {
-  font-family: "Iosevka Nerd Font";
-  src: url("/static/fonts/IosevkaNerdFont-Regular.ttf") format("truetype");
+  font-family: "Iosevka Nerd Font Propo";
+  src: url("/static/fonts/IosevkaNerdFontPropo-Regular.ttf") format("truetype");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: "Iosevka Nerd Font";
-  src: url("/static/fonts/IosevkaNerdFont-Medium.ttf") format("truetype");
+  font-family: "Iosevka Nerd Font Propo";
+  src: url("/static/fonts/IosevkaNerdFontPropo-Medium.ttf") format("truetype");
   font-weight: 500 600;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: "Iosevka Nerd Font";
-  src: url("/static/fonts/IosevkaNerdFont-Bold.ttf") format("truetype");
+  font-family: "Iosevka Nerd Font Propo";
+  src: url("/static/fonts/IosevkaNerdFontPropo-Bold.ttf") format("truetype");
   font-weight: 700;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: "Iosevka Nerd Font";
-  src: url("/static/fonts/IosevkaNerdFont-Italic.ttf") format("truetype");
+  font-family: "Iosevka Nerd Font Propo";
+  src: url("/static/fonts/IosevkaNerdFontPropo-Italic.ttf") format("truetype");
   font-weight: 400;
   font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Iosevka Nerd Font";
+  src: url("/static/fonts/IosevkaNerdFont-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
   font-display: swap;
 }
 
@@ -44,9 +52,9 @@
   --sage-soft: rgba(122, 184, 155, 0.14);
   --danger: #e07070;
   --radius: 12px;
-  --font-sans: "Iosevka Nerd Font", "Iosevka", "Segoe UI", sans-serif;
-  --font-serif: "Iosevka Nerd Font", "Iosevka", Georgia, serif;
-  --font-mono: "Iosevka Nerd Font", "Iosevka", Consolas, monospace;
+  --font-sans: "Iosevka Nerd Font Propo", "Iosevka Nerd Font", "Segoe UI", sans-serif;
+  --font-serif: "Iosevka Nerd Font Propo", "Iosevka Nerd Font", Georgia, serif;
+  --font-mono: "Iosevka Nerd Font", Consolas, monospace;
 }
 
 * {
@@ -55,6 +63,7 @@
 
 button, input, textarea, select {
   font-family: inherit;
+  letter-spacing: inherit;
 }
 
 html, body {
@@ -64,8 +73,10 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
-  font-size: 14.5px;
+  font-size: 15.5px;
   line-height: 1.55;
+  letter-spacing: 0.012em;
+  -webkit-font-smoothing: antialiased;
 }
 
 .hidden {
