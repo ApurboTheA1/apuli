@@ -344,6 +344,14 @@ async def serve_index():
     return FileResponse(index_file)
 
 
+@app.get("/favicon.ico")
+async def serve_favicon():
+    icon_file = FRONTEND_DIR / "apuli-icon.svg"
+    if not icon_file.exists():
+        raise HTTPException(status_code=404, detail="Icon not found")
+    return FileResponse(icon_file, media_type="image/svg+xml")
+
+
 @app.get("/api/status")
 async def get_status():
     cfg = load_config()

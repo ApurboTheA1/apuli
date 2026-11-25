@@ -119,19 +119,20 @@
 }
 
 :root {
-  --bg: #0f1115;
-  --bg-elev: #161920;
-  --bg-card: #1c2029;
-  --bg-hover: #232834;
-  --border: #2a303e;
-  --text: #e9ecf2;
-  --text-muted: #9aa3b5;
-  --accent: #e0a958;
-  --accent-soft: rgba(224, 169, 88, 0.14);
-  --sage: #7ab89b;
-  --sage-soft: rgba(122, 184, 155, 0.14);
-  --danger: #e07070;
-  --radius: 12px;
+  --bg: #16161A;
+  --bg-elev: #1B1C21;
+  --bg-card: #222329;
+  --bg-hover: #2A2B30;
+  --border: #2A2B30;
+  --border-strong: #373942;
+  --text: #ECEEF2;
+  --text-muted: #9296A3;
+  --accent: #EAA647;
+  --accent-soft: rgba(234, 166, 71, 0.13);
+  --sage: #428C6E;
+  --sage-soft: rgba(66, 140, 110, 0.16);
+  --danger: #D96B6B;
+  --radius: 11px;
   --font-sans: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
   --font-serif: Georgia, "Times New Roman", serif;
   --font-mono: "Source Code Pro", Consolas, monospace;
@@ -188,15 +189,127 @@ html, body {
 }
 
 .brand-mark {
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   border-radius: 10px;
-  background: var(--accent-soft);
-  color: var(--accent);
   display: grid;
   place-items: center;
-  font-size: 18px;
-  font-weight: 700;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.brand-mark img {
+  width: 36px;
+  height: 36px;
+  display: block;
+}
+
+.icon-svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+.nav-tab {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mode-pill::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--text-muted);
+  opacity: 0.5;
+}
+
+.mode-pill.active {
+  background: var(--bg-card);
+  color: var(--accent);
+  border-color: rgba(234, 166, 71, 0.35);
+  font-weight: 600;
+}
+
+.mode-pill.active::before {
+  background: var(--accent);
+  border-color: var(--accent);
+  opacity: 1;
+}
+
+.status-bar-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sage);
+}
+
+.status-bar-badge.cloud {
+  color: var(--accent);
+}
+
+.status-bar-badge .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.vault-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.welcome-orb {
+  width: 56px;
+  height: 56px;
+  border-radius: 15px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 14px;
+  overflow: hidden;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.welcome-orb img {
+  width: 56px;
+  height: 56px;
+  display: block;
 }
 
 .brand-title {
@@ -345,11 +458,15 @@ html, body {
   padding-top: 10px;
   border-top: 1px solid var(--border);
   margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
 }
 
 .privacy-badge {
   font-size: 11.5px;
-  color: var(--sage);
+  color: var(--text-muted);
   text-align: center;
 }
 
@@ -419,21 +536,8 @@ html, body {
   flex-wrap: wrap;
 }
 
-.mode-pill {
-  background: var(--bg-card);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 5px 12px;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.mode-pill.active {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-color: rgba(224, 169, 88, 0.4);
-  font-weight: 600;
+.mode-pill-legacy-unused {
+  display: none;
 }
 
 .chat-controls {
@@ -474,16 +578,8 @@ html, body {
   text-align: center;
 }
 
-.welcome-orb {
-  width: 52px;
-  height: 52px;
-  border-radius: 16px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  display: grid;
-  place-items: center;
-  font-size: 24px;
-  margin: 0 auto 14px;
+.welcome-orb-legacy-unused {
+  display: none;
 }
 
 .welcome-card h1 {

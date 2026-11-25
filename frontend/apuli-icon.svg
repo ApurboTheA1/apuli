@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <rect width="128" height="128" rx="28" fill="#232631"/>
+  <!-- Inner dark triangle backing -->
+  <path d="M64 31L96 93H32L64 31Z" fill="#16161A"/>
+  <!-- Right slate leg -->
+  <path d="M58 28H72L103 95H84L58 28Z" fill="#5B616D"/>
+  <!-- Bottom fold shadow -->
+  <path d="M35 83H74L68 95H39C31 95 27 89 30 82L35 83Z" fill="#C98831"/>
+  <!-- Left folded amber ribbon -->
+  <path d="M55 28H72L44 85C42 89 45 95 52 95H38C27 95 22 87 27 77L51 31C52.5 29 53.5 28 55 28Z" fill="#EAA647"/>
+  <path d="M38 83H71L66 95H40C33 95 30 89 33 83H38Z" fill="#EAA647"/>
+  <!-- Center sage privacy dot -->
+  <circle cx="65" cy="73" r="10.5" fill="#428C6E"/>
+</svg>

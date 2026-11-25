@@ -96,9 +96,9 @@ function updateModelPrivacyHint() {
   if (!sel || !hint || state.streaming) return;
   const val = sel.value || "";
   if (val.startsWith("ollama::") || val.includes("127.0.0.1") || !val.includes("::")) {
-    hint.textContent = "🔒 Running locally on your hardware — nothing leaves your PC.";
+    hint.innerHTML = `<span class="status-bar-badge"><span class="dot"></span>RUNNING LOCALLY ON YOUR HARDWARE</span>`;
   } else {
-    hint.textContent = "☁️ Using an external cloud API for this model (vault indexing stays local).";
+    hint.innerHTML = `<span class="status-bar-badge cloud"><span class="dot"></span>CLOUD API ACTIVE (VAULT STAYS LOCAL)</span>`;
   }
 }
 
@@ -237,10 +237,11 @@ async function loadStatus() {
   }
   state.wasDeepActive = deepActive;
 
-  // Memory badge
+  // Memory & Vault connected badges
   const memCnt = data.memory_count ?? 0;
   const chatCnt = data.chat_chunk_count ?? 0;
-  $("memoryBadge").textContent = `🔒 Local-first · ${memCnt} memories · ${chatCnt} chat turns`;
+  $("vaultConnectedBadge").classList.toggle("hidden", !!data.needs_onboarding);
+  $("memoryBadge").textContent = `${memCnt} memories · ${chatCnt} chat turns`;
 
   // Unified Provider Model Selector
   const pModels = data.provider_models || [];
@@ -654,7 +655,7 @@ function renderSourcesHtml(sources) {
               <span class="source-title" title="Past conversation">${escapeHtml(s.title)}</span>
               <button type="button" class="obsidian-link jump-chat-btn" data-conv="${escapeHtml(s.conversation_id)}" style="background:none;border:none;cursor:pointer;padding:0;">Jump ↗</button>
             </div>
-            <div class="source-meta">💬 Past Chat${s.note_date ? " · " + escapeHtml(s.note_date) : ""} · ${escapeHtml(s.match_reason)}</div>
+            <div class="source-meta">Past Chat${s.note_date ? " · " + escapeHtml(s.note_date) : ""} · ${escapeHtml(s.match_reason)}</div>
             <div class="source-excerpt">${escapeHtml(s.excerpt)}</div>
           </div>
         `;
@@ -665,7 +666,7 @@ function renderSourcesHtml(sources) {
             <span class="source-title" title="${escapeHtml(s.note_path)}">${escapeHtml(s.title)}</span>
             <a class="obsidian-link" href="${escapeHtml(s.obsidian_uri)}" title="Open in Obsidian">Open ↗</a>
           </div>
-          <div class="source-meta">📄 ${escapeHtml(s.folder)}${s.note_date ? " · " + escapeHtml(s.note_date) : ""} · ${escapeHtml(s.match_reason)}</div>
+          <div class="source-meta">${escapeHtml(s.folder)}${s.note_date ? " · " + escapeHtml(s.note_date) : ""} · ${escapeHtml(s.match_reason)}</div>
           <div class="source-excerpt">${escapeHtml(s.excerpt)}</div>
         </div>
       `;
@@ -673,7 +674,10 @@ function renderSourcesHtml(sources) {
     .join("");
   return `
     <details class="sources-drawer">
-      <summary>📚 ${sources.length} memory source${sources.length > 1 ? "s" : ""} referenced</summary>
+      <summary style="display:inline-flex;align-items:center;gap:6px;">
+        <svg class="icon-svg" viewBox="0 0 24 24"><path d="M4 19V5l4 5 4-5v14M17 5v14m0 0-3-3m3 3 3-3"/></svg>
+        <span>${sources.length} memory source${sources.length > 1 ? "s" : ""} referenced</span>
+      </summary>
       <div class="sources-list">${cards}</div>
     </details>
   `;
@@ -703,7 +707,10 @@ function renderMessages() {
       const bodyHtml = m.content ? renderMarkdown(m.content) : `<span class="muted">Thinking…</span>`;
       return `
         <div class="msg msg-assistant" data-msg-idx="${idx}">
-          <div class="msg-assistant-head">◈ ${escapeHtml(companionName)}</div>
+          <div class="msg-assistant-head">
+            <img src="/static/apuli-icon.svg" alt="" style="width:16px;height:16px;border-radius:4px;" />
+            <span>${escapeHtml(companionName)}</span>
+          </div>
           <div class="msg-bubble">
             ${thinkBlock}
             <div class="markdown-body">${bodyHtml}</div>
