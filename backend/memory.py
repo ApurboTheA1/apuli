@@ -1,4 +1,4 @@
-"""Personal companion prompts, auto-distilled memory, and whole-vault evolving self-portrait."""
+"""Personal companion prompts, auto-distilled memory, and note-by-note whole-vault self-portrait."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from .config import AppConfig, DB_PATH
 from .db import (
@@ -354,63 +354,122 @@ async def synthesize_self_profile(
         }
 
 
-def _load_chronological_notes(db_path: Path) -> List[Dict[str, str]]:
+def _load_note_segments(
+    note_path: str, db_path: Path, max_segment_chars: int = 5000
+) -> List[str]:
+    """Load the ENTIRE note across all of its chunks, split only if longer than max_segment_chars."""
     with db_session(db_path) as conn:
-        notes_rows = conn.execute(
+        rows = conn.execute(
             """
-            SELECT path, title, folder, note_date
-            FROM notes
-            ORDER BY COALESCE(note_date, '9999-99-99') ASC, mtime ASC
-            """
-        ).fetchall()
-        chunk_rows = conn.execute(
-            """
-            SELECT note_path, content
+            SELECT heading, content
             FROM chunks
-            ORDER BY note_path, chunk_index ASC
-            """
+            WHERE note_path = ?
+            ORDER BY chunk_index ASC
+            """,
+            (note_path,),
         ).fetchall()
 
-    text_by_path: Dict[str, List[str]] = {}
-    for ch in chunk_rows:
-        buf = text_by_path.setdefault(ch["note_path"], [])
-        if sum(len(x) for x in buf) < 950:
-            buf.append(ch["content"])
+    if not rows:
+        return []
 
-    out: List[Dict[str, str]] = []
-    for nr in notes_rows:
-        joined = "\n".join(text_by_path.get(nr["path"], []))[:950].strip()
-        if not joined:
+    segments: List[str] = []
+    buf: List[str] = []
+    cur_len = 0
+    for r in rows:
+        piece = f"[{r['heading']}]\n{r['content']}".strip() if r["heading"] else r["content"].strip()
+        if not piece:
             continue
-        out.append(
-            {
-                "path": nr["path"],
-                "title": nr["title"],
-                "folder": nr["folder"],
-                "note_date": nr["note_date"] or "undated",
-                "text": joined,
-            }
+        if buf and cur_len + len(piece) > max_segment_chars:
+            segments.append("\n\n".join(buf))
+            buf = []
+            cur_len = 0
+        buf.append(piece)
+        cur_len += len(piece) + 2
+    if buf:
+        segments.append("\n\n".join(buf))
+    return segments
+
+
+async def _digest_single_note(
+    note: Dict[str, str],
+    cfg: AppConfig,
+    used_model: str,
+    db_path: Path,
+) -> Tuple[str, int]:
+    """Read an entire single note (across all its segments) and store its cached digest."""
+    segments = _load_note_segments(note["path"], db_path)
+    full_len = sum(len(s) for s in segments)
+    if full_len < 25:
+        digest = "REFERENCE_ONLY"
+        is_personal = 0
+    else:
+        part_summaries: List[str] = []
+        for idx, seg in enumerate(segments, start=1):
+            part_label = f" (Part {idx}/{len(segments)})" if len(segments) > 1 else ""
+            prompt = (
+                f"Read this Obsidian note written by {cfg.user_name}:\n"
+                f"Path: {note['path']} | Date: {note['note_date']} | Folder: {note['folder']}{part_label}\n\n"
+                f"{seg}\n\n"
+                "Task:\n"
+                "- If this note contains anything personal (thoughts, feelings, self-reflection, values, struggles, "
+                "relationships, life events, decisions, or creative/podcast ideas), write 2–5 concise, specific bullet points "
+                f"capturing what it reveals about {cfg.user_name}.\n"
+                "- If it is purely generic reference material (raw lecture notes, textbook definitions, code, or bare links) "
+                "with zero personal insight, reply with exactly: REFERENCE_ONLY"
+            )
+            resp = await provider_chat_once(
+                cfg, used_model, [{"role": "user", "content": prompt}], temperature=0.2
+            )
+            cleaned = resp.strip()
+            if cleaned and "REFERENCE_ONLY" not in cleaned.upper():
+                part_summaries.append(cleaned)
+
+        if not part_summaries:
+            digest = "REFERENCE_ONLY"
+            is_personal = 0
+        elif len(part_summaries) == 1:
+            digest = part_summaries[0]
+            is_personal = 1
+        else:
+            merge_prompt = (
+                f"Combine these section summaries of a single note ({note['path']}, {note['note_date']}) "
+                f"into 3–6 concise bullet points capturing what it reveals about {cfg.user_name}:\n\n"
+                + "\n\n".join(part_summaries)
+            )
+            digest = await provider_chat_once(
+                cfg, used_model, [{"role": "user", "content": merge_prompt}], temperature=0.2
+            )
+            is_personal = 1
+
+    now = utc_now_iso()
+    with db_session(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO note_digests (
+                note_path, content_hash, note_date, folder, digest, is_personal, model_used, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(note_path) DO UPDATE SET
+                content_hash = excluded.content_hash,
+                note_date = excluded.note_date,
+                folder = excluded.folder,
+                digest = excluded.digest,
+                is_personal = excluded.is_personal,
+                model_used = excluded.model_used,
+                updated_at = excluded.updated_at
+            """,
+            (
+                note["path"],
+                note["content_hash"],
+                note["note_date"],
+                note["folder"],
+                digest,
+                is_personal,
+                used_model,
+                now,
+            ),
         )
-    return out
-
-
-def _batch_notes(
-    notes: List[Dict[str, str]], max_chars: int = 6200, max_items: int = 12
-) -> List[List[Dict[str, str]]]:
-    batches: List[List[Dict[str, str]]] = []
-    cur: List[Dict[str, str]] = []
-    cur_chars = 0
-    for n in notes:
-        entry_len = len(n["text"]) + len(n["path"]) + 40
-        if cur and (len(cur) >= max_items or cur_chars + entry_len > max_chars):
-            batches.append(cur)
-            cur = []
-            cur_chars = 0
-        cur.append(n)
-        cur_chars += entry_len
-    if cur:
-        batches.append(cur)
-    return batches
+    return digest, is_personal
 
 
 async def deep_synthesize_self_profile_stream(
@@ -419,70 +478,124 @@ async def deep_synthesize_self_profile_stream(
     db_path: Path = DB_PATH,
 ) -> AsyncIterator[Dict[str, Any]]:
     """
-    Chronologically walk through EVERY indexed note in the vault using map-reduce,
-    yielding live progress updates and saving a deep Self-Portrait.
+    Walk through EVERY indexed note in the vault ONE BY ONE in chronological order,
+    caching each note's digest in SQLite so progress is resumable and future updates
+    only inspect new/edited notes, then weave all insights into a complete Self-Portrait.
     """
     async with _profile_lock:
         used_model = model or cfg.memory_model or cfg.chat_model
-        all_notes = _load_chronological_notes(db_path)
-        total_notes = len(all_notes)
+
+        with db_session(db_path) as conn:
+            note_rows = conn.execute(
+                """
+                SELECT path, title, folder, note_date, content_hash
+                FROM notes
+                ORDER BY COALESCE(note_date, '9999-99-99') ASC, mtime ASC
+                """
+            ).fetchall()
+            cached_map = {
+                r["note_path"]: dict(r)
+                for r in conn.execute("SELECT * FROM note_digests").fetchall()
+            }
+
+        notes_list = [
+            {
+                "path": r["path"],
+                "title": r["title"],
+                "folder": r["folder"],
+                "note_date": r["note_date"] or "undated",
+                "content_hash": r["content_hash"],
+            }
+            for r in note_rows
+        ]
+        total_notes = len(notes_list)
 
         if total_notes == 0:
             yield {"stage": "error", "error": "No indexed notes found in the vault yet."}
             return
 
-        batches = _batch_notes(all_notes)
-        total_batches = len(batches)
-        batch_digests: List[str] = []
-        processed = 0
+        to_digest = []
+        reused = 0
+        for n in notes_list:
+            cached = cached_map.get(n["path"])
+            if cached and cached["content_hash"] == n["content_hash"]:
+                reused += 1
+            else:
+                to_digest.append(n)
 
-        for idx, batch in enumerate(batches, start=1):
-            processed += len(batch)
-            first_date = batch[0]["note_date"]
-            last_date = batch[-1]["note_date"]
+        if reused > 0:
             yield {
                 "stage": "reading",
-                "batch": idx,
-                "total_batches": total_batches,
-                "notes_processed": processed,
+                "notes_processed": reused,
                 "total_notes": total_notes,
-                "message": f"Reading notes {processed}/{total_notes} ({first_date} → {last_date})…",
+                "cached_notes": reused,
+                "message": f"Resuming — {reused}/{total_notes} unchanged notes already digested; reading {len(to_digest)} remaining one by one…",
             }
 
-            entries = [
-                f"- [{n['note_date']}] {n['path']}:\n  {n['text']}"
-                for n in batch
-            ]
-            map_prompt = (
-                f"You are analyzing chronological Obsidian notes by {cfg.user_name} ({first_date} to {last_date}).\n"
-                "Extract 4–7 concise bullet points capturing what these notes reveal about them as a person: "
-                "values, emotional state, struggles, personal growth, key relationships, creative/life projects, and worldview.\n"
-                "Skip generic class/textbook definitions unless they reflect personal interest.\n"
-                "Stay strictly grounded in the text.\n\n"
-                + "\n\n".join(entries)
-            )
-            digest = await provider_chat_once(
-                cfg, used_model, [{"role": "user", "content": map_prompt}], temperature=0.25
-            )
-            batch_digests.append(f"[{first_date} to {last_date}]\n{digest}")
+        processed = reused
+        for n in to_digest:
+            processed += 1
+            yield {
+                "stage": "reading",
+                "notes_processed": processed,
+                "total_notes": total_notes,
+                "cached_notes": reused,
+                "current_note": n["path"],
+                "message": f"Reading note {processed}/{total_notes} ({n['note_date']}) · {n['path']}",
+            }
+            await _digest_single_note(n, cfg, used_model, db_path)
 
-        # Hierarchical reduce if many batches accumulated
-        working = batch_digests
+        # Gather all digested insights chronologically
+        with db_session(db_path) as conn:
+            digest_rows = conn.execute(
+                """
+                SELECT d.note_path, d.note_date, d.folder, d.digest, d.is_personal
+                FROM note_digests d
+                JOIN notes n ON n.path = d.note_path
+                ORDER BY COALESCE(n.note_date, '9999-99-99') ASC, n.mtime ASC
+                """
+            ).fetchall()
+
+        personal_entries = [
+            f"[{r['note_date'] or 'undated'}] {r['note_path']}:\n{r['digest']}"
+            for r in digest_rows
+            if r["is_personal"] == 1 and r["digest"] and r["digest"] != "REFERENCE_ONLY"
+        ]
+        if not personal_entries:
+            personal_entries = [
+                f"[{r['note_date'] or 'undated'}] {r['note_path']} ({r['folder']})"
+                for r in digest_rows
+            ]
+
+        # Hierarchically fold digests in character-safe groups so local 7B/8B context never overflows
+        working = personal_entries
         round_num = 1
-        while len(working) > 10:
+        while len(working) > 14 or sum(len(x) for x in working) > 7500:
             yield {
                 "stage": "reducing",
                 "notes_processed": total_notes,
                 "total_notes": total_notes,
-                "message": f"Weaving life chapters together (pass {round_num}, {len(working)} sections)…",
+                "message": f"Synthesizing life chapters (pass {round_num} across {len(working)} insights)…",
             }
+            groups: List[List[str]] = []
+            cur_g: List[str] = []
+            cur_len = 0
+            for item in working:
+                if cur_g and (len(cur_g) >= 14 or cur_len + len(item) > 5800):
+                    groups.append(cur_g)
+                    cur_g = []
+                    cur_len = 0
+                cur_g.append(item)
+                cur_len += len(item) + 2
+            if cur_g:
+                groups.append(cur_g)
+
             next_level: List[str] = []
-            for i in range(0, len(working), 8):
-                group = working[i : i + 8]
+            for g in groups:
                 fold_prompt = (
-                    f"Consolidate these chronological insights about {cfg.user_name} into one cohesive chapter summary "
-                    "(8–12 concise bullets preserving specific people, themes, turning points, and emotional evolution):\n\n"
-                    + "\n\n---\n\n".join(group)
+                    f"Consolidate these chronological personal insights about {cfg.user_name} into one cohesive chapter summary "
+                    "(6–10 concise bullets preserving specific people, dates, turning points, struggles, and values):\n\n"
+                    + "\n\n---\n\n".join(g)
                 )
                 folded = await provider_chat_once(
                     cfg, used_model, [{"role": "user", "content": fold_prompt}], temperature=0.25
@@ -495,7 +608,7 @@ async def deep_synthesize_self_profile_stream(
             "stage": "reducing",
             "notes_processed": total_notes,
             "total_notes": total_notes,
-            "message": f"Writing final Self-Portrait from all {total_notes} notes…",
+            "message": f"Writing final Self-Portrait woven from all {total_notes} notes…",
         }
 
         memories = get_memories(db_path)
@@ -504,7 +617,7 @@ async def deep_synthesize_self_profile_stream(
         )
 
         final_prompt = (
-            f"Based on this complete chronological synthesis of {total_notes} Obsidian notes and saved memories for {cfg.user_name}, "
+            f"Based on this complete note-by-note chronological synthesis of all {total_notes} Obsidian notes and saved memories for {cfg.user_name}, "
             "write a deeply personal, honest, grounded Self-Portrait in Markdown (~450–650 words) to help them remember themselves.\n"
             "Use these exact sections:\n"
             "### Core Identity & Values\n"

@@ -652,7 +652,19 @@ async def api_delete_memory(mem_id: int):
 
 @app.get("/api/self-profile")
 async def api_get_self_profile():
-    return {"profile": get_self_profile(DB_PATH)}
+    with db_session(DB_PATH) as conn:
+        digested = conn.execute(
+            """
+            SELECT COUNT(*) FROM note_digests d
+            JOIN notes n ON n.path = d.note_path AND n.content_hash = d.content_hash
+            """
+        ).fetchone()[0]
+        total_notes = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+    return {
+        "profile": get_self_profile(DB_PATH),
+        "digested_notes": digested,
+        "total_notes": total_notes,
+    }
 
 
 @app.post("/api/self-profile/synthesize")

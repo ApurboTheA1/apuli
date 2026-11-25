@@ -713,6 +713,9 @@ async function loadMirrorAndMemories() {
   if (state.profile && state.profile.summary_md) {
     $("profileDisplay").innerHTML = renderMarkdown(state.profile.summary_md);
     updateProfileMeta(state.profile);
+  } else if (profRes.digested_notes > 0 && profRes.total_notes > 0) {
+    $("profileUpdatedAt").textContent =
+      `Resume ready: ${profRes.digested_notes}/${profRes.total_notes} notes digested so far. Click Deep Read Whole Vault to continue.`;
   }
 
   renderMemories();
@@ -869,10 +872,13 @@ function bindEvents() {
   $("deepSynthBtn").onclick = async () => {
     const btn = $("deepSynthBtn");
     const prog = $("deepSynthProgress");
+    const progText = $("deepSynthText");
+    const progBar = $("deepSynthBar");
     btn.disabled = true;
     $("synthProfileBtn").disabled = true;
     prog.classList.remove("hidden");
-    prog.textContent = "Preparing chronological read of your entire vault…";
+    progText.textContent = "Preparing note-by-note chronological read of your vault…";
+    progBar.style.width = "2%";
 
     try {
       const res = await fetch("/api/self-profile/deep-synthesize", { method: "POST" });
@@ -898,20 +904,25 @@ function bindEvents() {
           if (!payload) continue;
           const parsed = JSON.parse(payload);
           if (type === "progress") {
-            prog.textContent = parsed.message || "Reading vault…";
+            progText.textContent = parsed.message || "Reading vault…";
+            if (parsed.total_notes) {
+              const pct = Math.min(98, Math.max(2, Math.round((parsed.notes_processed / parsed.total_notes) * 100)));
+              progBar.style.width = `${pct}%`;
+            }
           } else if (type === "done") {
             state.profile = parsed.profile;
             $("profileDisplay").innerHTML = renderMarkdown(parsed.profile.summary_md);
             updateProfileMeta(parsed.profile);
-            prog.textContent = `Complete — synthesized across all ${parsed.total_notes} notes.`;
+            progBar.style.width = "100%";
+            progText.textContent = `Complete — synthesized one by one across all ${parsed.total_notes} notes.`;
             showToast(`Deep Self-Portrait built from ${parsed.total_notes} notes!`);
           } else if (type === "error") {
-            prog.textContent = `Error: ${parsed.error}`;
+            progText.textContent = `Error: ${parsed.error}`;
           }
         }
       }
     } catch (err) {
-      prog.textContent = `Failed: ${err.message}`;
+      progText.textContent = `Failed: ${err.message}`;
     } finally {
       btn.disabled = false;
       $("synthProfileBtn").disabled = false;

@@ -294,11 +294,21 @@ def test_deep_whole_vault_synthesis(tmp_path: Path, monkeypatch):
 
     vault = tmp_path / "Obsidian"
     (vault / "Personal").mkdir(parents=True)
-    for i, dt in enumerate(["2024-01-10", "2024-06-15", "2025-03-01", "2026-02-20"], start=1):
-        (vault / "Personal" / f"note_{i}.md").write_text(
-            f"---\ndate: {dt}\n---\n# Entry {i}\nReflecting on growth chapter {i}.",
-            encoding="utf-8",
-        )
+    (vault / "College").mkdir(parents=True)
+
+    # Create chronological personal notes + 1 reference note + 1 long multi-chunk note
+    (vault / "Personal" / "note_1.md").write_text(
+        "---\ndate: 2024-01-10\n---\n# Entry 1\nEarly reflection on purpose.",
+        encoding="utf-8",
+    )
+    (vault / "College" / "ref.md").write_text(
+        "---\ndate: 2024-06-15\n---\n# OS Notes\nProcess scheduling algorithm definitions.",
+        encoding="utf-8",
+    )
+    (vault / "Personal" / "note_3.md").write_text(
+        "---\ndate: 2026-02-20\n---\n# Entry 3\n" + ("Deep personal insight. " * 30),
+        encoding="utf-8",
+    )
 
     db_file = tmp_path / "deep.db"
     init_db(db_file)
@@ -309,10 +319,13 @@ def test_deep_whole_vault_synthesis(tmp_path: Path, monkeypatch):
     prompts_seen = []
 
     async def fake_provider_chat_once(cfg_arg, model_spec, messages, temperature=0.3):
-        prompts_seen.append(messages[0]["content"])
-        if "Chronological Vault Synthesis" in messages[0]["content"]:
+        p = messages[0]["content"]
+        prompts_seen.append(p)
+        if "Chronological Vault Synthesis" in p:
             return "### Core Identity & Values\nConsistent growth across 2024–2026."
-        return "- Growth noted across period."
+        if "Process scheduling algorithm" in p:
+            return "REFERENCE_ONLY"
+        return "- Personal growth and reflection noted."
 
     monkeypatch.setattr(memory_mod, "provider_chat_once", fake_provider_chat_once)
 
@@ -324,12 +337,22 @@ def test_deep_whole_vault_synthesis(tmp_path: Path, monkeypatch):
 
     events = asyncio.run(run_stream())
     assert events[-1]["stage"] == "done"
-    assert events[-1]["total_notes"] == 4
-    # Verify chronological order appeared in map prompt
-    map_prompt = prompts_seen[0]
-    assert map_prompt.index("2024-01-10") < map_prompt.index("2026-02-20")
+    assert events[-1]["total_notes"] == 3
+
+    # Verify chronological note-by-note reading order (2024-01-10 -> 2024-06-15 -> 2026-02-20)
+    read_prompts = [p for p in prompts_seen if "Read this Obsidian note" in p]
+    assert len(read_prompts) == 3
+    assert "2024-01-10" in read_prompts[0]
+    assert "2024-06-15" in read_prompts[1]
+    assert "2026-02-20" in read_prompts[2]
 
     stored = get_self_profile(db_file)
     assert stored is not None
     assert stored["is_deep"] == 1
-    assert stored["notes_covered"] == 4
+    assert stored["notes_covered"] == 3
+
+    # Second run with no note changes should reuse all 3 cached digests (0 new read calls)
+    prompts_seen.clear()
+    events2 = asyncio.run(run_stream())
+    assert events2[-1]["stage"] == "done"
+    assert [p for p in prompts_seen if "Read this Obsidian note" in p] == []

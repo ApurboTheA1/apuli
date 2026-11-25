@@ -160,6 +160,18 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 notes_covered INTEGER NOT NULL DEFAULT 0,
                 is_deep INTEGER NOT NULL DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS note_digests (
+                note_path TEXT PRIMARY KEY,
+                content_hash TEXT NOT NULL,
+                note_date TEXT,
+                folder TEXT NOT NULL,
+                digest TEXT NOT NULL,
+                is_personal INTEGER NOT NULL DEFAULT 1,
+                model_used TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (note_path) REFERENCES notes(path) ON DELETE CASCADE
+            );
             """
         )
         # Safe migrations for pre-existing databases
