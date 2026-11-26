@@ -371,6 +371,13 @@ async function loadStatus() {
   $("setMemoryModel").innerHTML = memChoices.join("");
   $("setMemoryModel").value = cfg.memory_model || "";
 
+  const finalChoices = [
+    `<option value="">Auto (Prefer 14B for final Self-Portrait if installed)</option>`,
+    ...pModels.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.label)}</option>`),
+  ];
+  $("setFinalModel").innerHTML = finalChoices.join("");
+  $("setFinalModel").value = cfg.final_synthesis_model || "";
+
   // Folder scope selector
   const scopeSelect = $("folderScopeSelect");
   const prevScope = scopeSelect.value || "all";
@@ -1579,6 +1586,7 @@ function bindEvents() {
         ...(newPinVal ? { network_pin: newPinVal } : {}),
         chat_model: $("setChatModel").value,
         memory_model: $("setMemoryModel").value,
+        final_synthesis_model: $("setFinalModel").value,
         embedding_model: $("setEmbedModel").value.trim(),
         temperature: parseFloat($("setTemp").value),
         top_k_chunks: parseInt($("setTopK").value, 10),

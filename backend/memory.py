@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import re
+import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
@@ -19,7 +22,7 @@ from .db import (
     get_self_profile,
     utc_now_iso,
 )
-from .hardware import compute_synthesis_budget
+from .hardware import compute_synthesis_budget, detect_hardware
 from .ollama_client import check_ollama
 from .providers import parse_model_spec, provider_chat_once
 from .retrieval import RetrievedChatChunk, RetrievedChunk
@@ -462,14 +465,77 @@ async def _call_chat_once(
     num_ctx: int = 8192,
 ) -> str:
     sig = inspect.signature(provider_chat_once)
+    kwargs: Dict[str, Any] = {"temperature": temperature}
     if "num_ctx" in sig.parameters:
-        return await provider_chat_once(
-            cfg, used_model, [{"role": "user", "content": prompt}],
-            temperature=temperature, num_ctx=num_ctx,
-        )
+        kwargs["num_ctx"] = num_ctx
+    if "keep_alive" in sig.parameters:
+        kwargs["keep_alive"] = cfg.ollama_keep_alive
+    if "num_thread" in sig.parameters:
+        kwargs["num_thread"] = cfg.ollama_num_thread
     return await provider_chat_once(
-        cfg, used_model, [{"role": "user", "content": prompt}], temperature=temperature
+        cfg, used_model, [{"role": "user", "content": prompt}], **kwargs
     )
+
+
+def _get_cached_chapter(
+    db_path: Path, chapter_key: str, source_hash: str
+) -> Optional[str]:
+    with db_session(db_path) as conn:
+        row = conn.execute(
+            "SELECT summary, source_hash FROM synthesis_chapters WHERE chapter_key = ?",
+            (chapter_key,),
+        ).fetchone()
+    if row and row["source_hash"] == source_hash and row["summary"]:
+        return str(row["summary"])
+    return None
+
+
+def _save_cached_chapter(
+    db_path: Path,
+    chapter_key: str,
+    scope: str,
+    source_hash: str,
+    model_used: str,
+    summary: str,
+) -> None:
+    with db_session(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO synthesis_chapters (chapter_key, scope, source_hash, model_used, summary, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chapter_key) DO UPDATE SET
+                scope = excluded.scope,
+                source_hash = excluded.source_hash,
+                model_used = excluded.model_used,
+                summary = excluded.summary,
+                updated_at = excluded.updated_at
+            """,
+            (chapter_key, scope, source_hash, model_used, summary, utc_now_iso()),
+        )
+
+
+async def _resolve_final_synthesis_model(cfg: AppConfig, reader_model: str) -> str:
+    """Use an explicit stronger model if configured, or auto-upgrade final Self-Portrait to 14B when installed."""
+    explicit = (getattr(cfg, "final_synthesis_model", "") or "").strip()
+    if explicit:
+        return explicit
+    if cfg.provider != "ollama" or cfg.memory_model or "::" in reader_model:
+        return reader_model
+    try:
+        ollama = await check_ollama(cfg.ollama_url)
+    except Exception:
+        return reader_model
+    if not ollama.get("online"):
+        return reader_model
+    chat_models: List[str] = list(ollama.get("chat_models") or [])
+    if "qwen2.5:14b" in chat_models:
+        return "qwen2.5:14b"
+    # Otherwise pick any installed non-reasoning 13b–32b model for the single final synthesis pass
+    for m in chat_models:
+        ml = m.lower()
+        if any(tag in ml for tag in ("14b", "13b", "22b", "27b", "32b")) and "r1" not in ml:
+            return m
+    return reader_model
 
 
 async def _digest_single_note(
@@ -605,9 +671,14 @@ async def deep_synthesize_self_profile_stream(
     SQLite so progress is resumable and future updates only read new/edited notes.
     """
     async with _profile_lock:
+        t_start = time.monotonic()
         used_model = model or cfg.memory_model or cfg.chat_model
         prov, mod_name = parse_model_spec(used_model, cfg.provider or "ollama")
-        budget = compute_synthesis_budget(prov, mod_name)
+        hw = detect_hardware()
+        budget = compute_synthesis_budget(prov, mod_name, hw=hw)
+        concurrency = 2 if (
+            prov in ("openai", "anthropic", "gemini") or float(hw.get("vram_gb") or 0) >= 7.5
+        ) else 1
 
         with db_session(db_path) as conn:
             note_rows = conn.execute(
@@ -697,62 +768,87 @@ async def deep_synthesize_self_profile_stream(
             batches.append(cur_batch)
 
         processed = reused
-        for b_idx, batch in enumerate(batches, start=1):
-            first_date = batch[0][0]["note_date"]
-            last_date = batch[-1][0]["note_date"]
-            processed += len(batch)
+        total_batches = len(batches)
+        b_idx = 0
+        while b_idx < total_batches:
+            wave = batches[b_idx : b_idx + concurrency]
+            wave_end = min(total_batches, b_idx + len(wave))
+            first_date = wave[0][0][0]["note_date"]
+            last_date = wave[-1][-1][0]["note_date"]
+            processed += sum(len(b) for b in wave)
             yield {
                 "stage": "reading",
                 "notes_processed": processed,
                 "total_notes": total_notes,
                 "cached_notes": reused,
-                "batch": b_idx,
-                "total_batches": len(batches),
+                "batch": wave_end,
+                "total_batches": total_batches,
                 "message": (
                     f"Reading {processed}/{total_notes} ({first_date} → {last_date}, "
-                    f"batch {b_idx}/{len(batches)} · {budget['label']})"
+                    f"batch {wave_end}/{total_batches} · {budget['label']})"
                 ),
             }
-            await _digest_note_batch(batch, cfg, used_model, int(budget["num_ctx"]), db_path)
+            if len(wave) == 1:
+                await _digest_note_batch(wave[0], cfg, used_model, int(budget["num_ctx"]), db_path)
+            else:
+                await asyncio.gather(
+                    *(
+                        _digest_note_batch(b, cfg, used_model, int(budget["num_ctx"]), db_path)
+                        for b in wave
+                    )
+                )
+            b_idx += len(wave)
 
-        # Gather all digested insights chronologically, separating Journal Gold vs Supporting Vault
+        # Gather all digested insights chronologically with content_hash for monthly chapter caching
         with db_session(db_path) as conn:
             digest_rows = conn.execute(
                 """
-                SELECT d.note_path, d.note_date, d.folder, d.digest, d.is_personal
+                SELECT d.note_path, d.note_date, d.folder, d.digest, d.is_personal,
+                       n.content_hash
                 FROM note_digests d
                 JOIN notes n ON n.path = d.note_path
                 ORDER BY COALESCE(n.note_date, '9999-99-99') ASC, n.mtime ASC
                 """
             ).fetchall()
 
-        journal_entries = [
-            f"[{r['note_date'] or 'undated'}] {r['note_path']}:\n{r['digest']}"
+        journal_rows = [
+            dict(r)
             for r in digest_rows
             if is_in_folders(r["note_path"], cfg.journal_folders)
             and r["digest"]
             and r["digest"] != "REFERENCE_ONLY"
         ]
-        other_entries = [
-            f"[{r['note_date'] or 'undated'}] {r['note_path']}:\n{r['digest']}"
+        other_rows = [
+            dict(r)
             for r in digest_rows
             if not is_in_folders(r["note_path"], cfg.journal_folders)
             and r["is_personal"] == 1
             and r["digest"]
             and r["digest"] != "REFERENCE_ONLY"
         ]
-        if not journal_entries and not other_entries:
-            other_entries = [
-                f"[{r['note_date'] or 'undated'}] {r['note_path']} ({r['folder']})"
-                for r in digest_rows
+        if not journal_rows and not other_rows:
+            other_rows = [
+                {
+                    "note_path": r["note_path"],
+                    "note_date": r["note_date"],
+                    "folder": r["folder"],
+                    "content_hash": r["content_hash"],
+                    "digest": f"{r['note_path']} ({r['folder']})",
+                }
+                for r in digest_rows[:25]
             ]
 
-        async def _fold_list_stream(
+        analytics = compute_vault_analytics(db_path, cfg.journal_folders)
+        anchor_paths = {a["note_path"]: a["in_links"] for a in analytics.get("anchor_notes", [])}
+        num_ctx = int(budget["num_ctx"])
+        group_char_cap = max(8000, int(budget["batch_max_chars"]))
+        journal_final_budget = min(16000, max(7500, int(num_ctx * 1.1)))
+
+        async def _fold_bounded(
             entries: List[str],
             label: str,
-            target_max_chars: int = 4200,
-            group_char_cap: int = 8500,
-            max_rounds: int = 3,
+            target_max_chars: int,
+            max_rounds: int = 2,
         ) -> AsyncIterator[Dict[str, Any]]:
             working = [e for e in entries if e and e.strip()]
             round_num = 1
@@ -776,95 +872,252 @@ async def deep_synthesize_self_profile_stream(
                 if cur_g:
                     groups.append(cur_g)
 
-                # Guard against 1-item groups failing to shrink `working` (which caused infinite loops)
                 if len(groups) >= len(working):
                     groups = [working[i : i + 2] for i in range(0, len(working), 2)]
 
                 next_level: List[str] = []
                 total_g = len(groups)
-                for g_idx, g in enumerate(groups, start=1):
+                for g_idx in range(0, total_g, concurrency):
+                    wave_g = groups[g_idx : g_idx + concurrency]
                     yield {
                         "type": "progress",
                         "message": (
-                            f"Synthesizing {label} chapters · Round {round_num}, "
-                            f"group {g_idx}/{total_g} ({len(entries)} entries)…"
+                            f"Synthesizing {label} · Round {round_num}, "
+                            f"group {min(total_g, g_idx + len(wave_g))}/{total_g} ({len(entries)} entries)…"
                         ),
                     }
-                    # Cap individual inputs inside huge merge groups to stay well within num_ctx
-                    each_cap = max(600, group_char_cap // max(1, len(g)))
-                    trimmed_g = [item[:each_cap] for item in g]
-                    fold_prompt = (
-                        f"Consolidate these chronological {label} insights about {cfg.user_name} into one cohesive, compact chapter summary "
-                        "(5–8 concise bullets preserving specific people, dates, turning points, struggles, and values; keep under ~1,000 characters):\n\n"
-                        + "\n\n---\n\n".join(trimmed_g)
-                    )
-                    folded = await _call_chat_once(
-                        cfg, used_model, fold_prompt, temperature=0.25, num_ctx=int(budget["num_ctx"])
-                    )
-                    next_level.append(folded.strip() or trimmed_g[0][:600])
-
+                    prompts: List[Tuple[str, str]] = []
+                    for g in wave_g:
+                        each_cap = max(600, group_char_cap // max(1, len(g)))
+                        trimmed_g = [item[:each_cap] for item in g]
+                        fold_prompt = (
+                            f"Consolidate these chronological {label} insights about {cfg.user_name} into one compact chapter summary "
+                            "(5–8 concise bullets preserving specific people, dates, turning points, struggles, and values; keep under ~1,000 characters):\n\n"
+                            + "\n\n---\n\n".join(trimmed_g)
+                        )
+                        prompts.append((fold_prompt, trimmed_g[0][:600]))
+                    if len(prompts) == 1:
+                        res_txt = await _call_chat_once(
+                            cfg, used_model, prompts[0][0], temperature=0.25, num_ctx=num_ctx
+                        )
+                        next_level.append(res_txt.strip() or prompts[0][1])
+                    else:
+                        outs = await asyncio.gather(
+                            *(
+                                _call_chat_once(
+                                    cfg, used_model, prm, temperature=0.25, num_ctx=num_ctx
+                                )
+                                for prm, _ in prompts
+                            )
+                        )
+                        for idx_o, res_txt in enumerate(outs):
+                            next_level.append(res_txt.strip() or prompts[idx_o][1])
                 working = next_level
                 round_num += 1
 
-            # Guarantee bounded output size even if individual rounds ran long
             if working and sum(len(x) for x in working) > target_max_chars:
                 per_item = max(350, target_max_chars // len(working))
                 working = [x[:per_item] for x in working]
             yield {"type": "result", "items": working}
 
+        # --- Stage 2A: Monthly Cached Journal Chapters ---
         folded_journals: List[str] = []
-        if journal_entries:
-            yield {
-                "stage": "reducing",
-                "notes_processed": total_notes,
-                "total_notes": total_notes,
-                "message": f"Synthesizing journal chapters ({len(journal_entries)} journal entries)…",
-            }
-            async for ev in _fold_list_stream(
-                journal_entries,
-                "journal & reflection",
-                target_max_chars=4800,
-                group_char_cap=max(7500, int(budget["batch_max_chars"])),
-            ):
-                if ev["type"] == "progress":
+        chapters_reused = 0
+        chapters_generated = 0
+        if journal_rows:
+            month_buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+            undated_buf: List[Dict[str, Any]] = []
+            for r in journal_rows:
+                nd = (r.get("note_date") or "").strip()
+                ym = nd[:7] if len(nd) >= 7 and re.match(r"^20\d{2}-\d{2}$", nd[:7]) else ""
+                if ym:
+                    month_buckets[ym].append(r)
+                else:
+                    undated_buf.append(r)
+
+            bucket_items: List[Tuple[str, List[Dict[str, Any]]]] = [
+                (ym, month_buckets[ym]) for ym in sorted(month_buckets.keys())
+            ]
+            for u_idx in range(0, len(undated_buf), 12):
+                bucket_items.append((f"undated-{u_idx // 12 + 1:02d}", undated_buf[u_idx : u_idx + 12]))
+
+            total_months = len(bucket_items)
+            month_summaries: Dict[str, str] = {}
+            uncached_months: List[Tuple[str, str, List[str]]] = []
+
+            for b_key, mrows in bucket_items:
+                sig_parts = [used_model] + [
+                    f"{mr['note_path']}:{mr.get('content_hash') or ''}" for mr in mrows
+                ]
+                src_hash = hashlib.sha256("|".join(sig_parts).encode("utf-8")).hexdigest()[:24]
+                cached_ch = _get_cached_chapter(db_path, f"journal:{b_key}", src_hash)
+                if cached_ch:
+                    month_summaries[b_key] = cached_ch
+                    chapters_reused += 1
+                    continue
+
+                raw_entries = [
+                    f"[{mr['note_date'] or 'undated'}] {mr['note_path']}:\n{mr['digest']}"
+                    for mr in mrows
+                ]
+                if len(mrows) <= 3 and sum(len(x) for x in raw_entries) <= 1300:
+                    compact = f"### {b_key} ({len(mrows)} entries)\n" + "\n".join(raw_entries)
+                    _save_cached_chapter(
+                        db_path, f"journal:{b_key}", "journal", src_hash, used_model, compact
+                    )
+                    month_summaries[b_key] = compact
+                    chapters_reused += 1
+                else:
+                    uncached_months.append((b_key, src_hash, raw_entries))
+
+            if uncached_months:
+                done_months = chapters_reused
+                sem = asyncio.Semaphore(concurrency)
+
+                async def _build_month_chapter(
+                    b_key: str, src_hash: str, raw_entries: List[str]
+                ) -> Tuple[str, str]:
+                    async with sem:
+                        combined = "\n\n---\n\n".join(raw_entries)
+                        # If an extraordinarily dense month exceeds one prompt, pre-chunk once cleanly
+                        if len(combined) > group_char_cap:
+                            mid = len(raw_entries) // 2
+                            parts_m = [raw_entries[:mid], raw_entries[mid:]]
+                            part_outs = []
+                            for prt in parts_m:
+                                sub_txt = "\n\n---\n\n".join(prt)[:group_char_cap]
+                                sub_p = (
+                                    f"Summarize this portion of {cfg.user_name}'s {b_key} journal entries into 4–6 concise bullets "
+                                    "(preserving people, dates, feelings, struggles, and turning points):\n\n"
+                                    + sub_txt
+                                )
+                                part_outs.append(
+                                    await _call_chat_once(
+                                        cfg, used_model, sub_p, temperature=0.25, num_ctx=num_ctx
+                                    )
+                                )
+                            combined = "\n\n".join(part_outs)
+
+                        m_prompt = (
+                            f"Distill {cfg.user_name}'s journal entries for **{b_key}** ({len(raw_entries)} entries) "
+                            "into a single crisp monthly chapter (4–7 bullets, ~400–850 characters max) preserving "
+                            "key people, concrete events, emotional shifts, struggles, and values:\n\n"
+                            + combined[:group_char_cap]
+                        )
+                        ans = await _call_chat_once(
+                            cfg, used_model, m_prompt, temperature=0.25, num_ctx=num_ctx
+                        )
+                        chapter_md = f"### {b_key} ({len(raw_entries)} entries)\n{(ans.strip() or raw_entries[0][:400])}"
+                        _save_cached_chapter(
+                            db_path, f"journal:{b_key}", "journal", src_hash, used_model, chapter_md
+                        )
+                        return b_key, chapter_md
+
+                for i_m in range(0, len(uncached_months), concurrency):
+                    wave_m = uncached_months[i_m : i_m + concurrency]
+                    labels_w = ", ".join(x[0] for x in wave_m)
+                    done_months += len(wave_m)
                     yield {
                         "stage": "reducing",
                         "notes_processed": total_notes,
                         "total_notes": total_notes,
-                        "message": ev["message"],
+                        "message": (
+                            f"Synthesizing monthly journal chapters · Round 1, "
+                            f"{done_months}/{total_months} months ({labels_w})…"
+                        ),
                     }
-                else:
-                    folded_journals = ev["items"]
+                    res_wave = await asyncio.gather(
+                        *(_build_month_chapter(k, sh, re_l) for k, sh, re_l in wave_m)
+                    )
+                    for k, ch_md in res_wave:
+                        month_summaries[k] = ch_md
+                        chapters_generated += 1
 
+            ordered_chapters = [month_summaries[k] for k, _ in bucket_items if k in month_summaries]
+            if sum(len(c) for c in ordered_chapters) > journal_final_budget:
+                async for ev in _fold_bounded(
+                    ordered_chapters,
+                    "monthly journal chapters",
+                    target_max_chars=journal_final_budget,
+                    max_rounds=2,
+                ):
+                    if ev["type"] == "progress":
+                        yield {
+                            "stage": "reducing",
+                            "notes_processed": total_notes,
+                            "total_notes": total_notes,
+                            "message": ev["message"],
+                        }
+                    else:
+                        folded_journals = ev["items"]
+            else:
+                folded_journals = ordered_chapters
+                if chapters_reused and not chapters_generated:
+                    yield {
+                        "stage": "reducing",
+                        "notes_processed": total_notes,
+                        "total_notes": total_notes,
+                        "message": f"Reused {chapters_reused} cached monthly journal chapters (Round 1)…",
+                    }
+
+        # --- Stage 2B: Smart High-Signal Supporting Vault Context ---
         folded_others: List[str] = []
-        if other_entries:
-            yield {
-                "stage": "reducing",
-                "notes_processed": total_notes,
-                "total_notes": total_notes,
-                "message": f"Integrating supporting vault context ({len(other_entries)} notes)…",
-            }
-            async for ev in _fold_list_stream(
-                other_entries,
-                "vault context",
-                target_max_chars=2600,
-                group_char_cap=max(7500, int(budget["batch_max_chars"])),
-            ):
-                if ev["type"] == "progress":
+        if other_rows:
+            def _support_score(r: Dict[str, Any]) -> Tuple[int, int, str]:
+                is_people = 1 if r.get("folder") == "People" else 0
+                links = int(anchor_paths.get(r["note_path"], 0))
+                nd = str(r.get("note_date") or "")
+                return (is_people, links, nd)
+
+            ranked_others = sorted(other_rows, key=_support_score, reverse=True)
+            top_direct = ranked_others[:14]
+            direct_entries = [
+                f"[{r['note_date'] or 'undated'}] {r['note_path']}:\n{r['digest'][:320]}"
+                for r in top_direct
+            ]
+            folded_others = direct_entries
+
+            # Summarize broader secondary notes via cached supporting digest if large (>18)
+            tail_others = ranked_others[14:46]
+            if len(tail_others) >= 6:
+                tail_sig = "|".join(
+                    [used_model] + [f"{r['note_path']}:{r.get('content_hash') or ''}" for r in tail_others]
+                )
+                tail_hash = hashlib.sha256(tail_sig.encode("utf-8")).hexdigest()[:24]
+                cached_sup = _get_cached_chapter(db_path, "supporting:vault-tail", tail_hash)
+                if cached_sup:
+                    folded_others.append(cached_sup)
+                    chapters_reused += 1
+                else:
                     yield {
                         "stage": "reducing",
                         "notes_processed": total_notes,
                         "total_notes": total_notes,
-                        "message": ev["message"],
+                        "message": f"Integrating supporting vault themes ({len(other_rows)} notes)…",
                     }
-                else:
-                    folded_others = ev["items"]
+                    tail_txt = "\n\n".join(
+                        f"[{r['folder']}] {r['note_path']}: {r['digest'][:240]}" for r in tail_others
+                    )[:group_char_cap]
+                    sup_prompt = (
+                        f"Summarize the secondary interests, projects, studies, and media/creative threads across these {len(tail_others)} "
+                        f"supporting notes for {cfg.user_name} in 4–6 concise bullets (~600 chars):\n\n{tail_txt}"
+                    )
+                    sup_ans = await _call_chat_once(
+                        cfg, used_model, sup_prompt, temperature=0.25, num_ctx=num_ctx
+                    )
+                    sup_md = "### Broader Supporting Notes & Interests\n" + (sup_ans.strip() or "")
+                    _save_cached_chapter(
+                        db_path, "supporting:vault-tail", "supporting", tail_hash, used_model, sup_md
+                    )
+                    folded_others.append(sup_md)
+                    chapters_generated += 1
 
+        final_model = await _resolve_final_synthesis_model(cfg, used_model)
         yield {
             "stage": "reducing",
             "notes_processed": total_notes,
             "total_notes": total_notes,
-            "message": f"Writing final Self-Portrait woven from all {total_notes} notes…",
+            "message": f"Writing final Self-Portrait from {total_notes} notes using {final_model}…",
         }
 
         memories = get_memories(db_path)
@@ -872,8 +1125,7 @@ async def deep_synthesize_self_profile_stream(
             f"- ({m['category']}) {m['content']}" for m in memories[:25]
         )
 
-        # Weave classic ML cluster + relationship signals into the Self-Portrait
-        analytics = compute_vault_analytics(db_path, cfg.journal_folders)
+        # Classic ML cluster + relationship signals (analytics already computed above)
         ml_lines = []
         if analytics.get("clusters"):
             ml_lines.append(
@@ -920,9 +1172,11 @@ async def deep_synthesize_self_profile_stream(
             + "\n\n".join(synthesis_sections)
         )
 
-        summary = await provider_chat_once(
-            cfg, used_model, [{"role": "user", "content": final_prompt}], temperature=0.35
+        final_ctx = max(num_ctx, 12288)
+        summary = await _call_chat_once(
+            cfg, final_model, final_prompt, temperature=0.35, num_ctx=final_ctx
         )
+        elapsed_s = round(time.monotonic() - t_start, 1)
         now = utc_now_iso()
         with db_session(db_path) as conn:
             note_count = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
@@ -949,6 +1203,10 @@ async def deep_synthesize_self_profile_stream(
             "stage": "done",
             "notes_processed": total_notes,
             "total_notes": total_notes,
+            "elapsed_seconds": elapsed_s,
+            "chapters_reused": chapters_reused,
+            "chapters_generated": chapters_generated,
+            "final_model": final_model,
             "profile": {
                 "summary_md": summary,
                 "updated_at": now,
@@ -1002,6 +1260,12 @@ async def maybe_evolve_self_profile(
     prev_notes = int(profile.get("note_count_snapshot") or 0)
     prev_mems = int(profile.get("memory_count_snapshot") or 0)
     if (mem_count - prev_mems) >= 4 or abs(note_count - prev_notes) >= 10 or edited_since >= 8:
+        if int(profile.get("is_deep") or 0) == 1:
+            latest_profile = None
+            async for ev in deep_synthesize_self_profile_stream(cfg, db_path=db_path):
+                if ev.get("stage") == "done":
+                    latest_profile = ev.get("profile")
+            return latest_profile
         return await synthesize_self_profile(cfg, db_path=db_path)
 
     return None

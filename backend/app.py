@@ -111,11 +111,16 @@ async def _run_deep_synthesis_bg() -> None:
             stage = item.get("stage", "reading")
             if stage == "done":
                 _last_learned_at = utc_now_iso()
+                elapsed = item.get("elapsed_seconds")
+                fmod = item.get("final_model")
+                suffix = f" in {elapsed}s" if elapsed is not None else ""
+                if fmod:
+                    suffix += f" · {fmod}"
                 _deep_status = {
                     "state": "idle",
                     "notes_processed": item.get("total_notes", 0),
                     "total_notes": item.get("total_notes", 0),
-                    "message": f"Deep Self-Portrait ready ({item.get('total_notes', 0)} notes).",
+                    "message": f"Deep Self-Portrait ready ({item.get('total_notes', 0)} notes{suffix}).",
                     "updated_at": _last_learned_at,
                 }
             elif stage == "error":
@@ -399,6 +404,7 @@ class SettingsUpdate(BaseModel):
     provider: Optional[str] = None
     chat_model: Optional[str] = None
     memory_model: Optional[str] = None
+    final_synthesis_model: Optional[str] = None
     embedding_model: Optional[str] = None
     excluded_folders: Optional[List[str]] = None
     journal_folders: Optional[List[str]] = None

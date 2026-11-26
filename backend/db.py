@@ -188,6 +188,15 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (note_path) REFERENCES notes(path) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS synthesis_chapters (
+                chapter_key TEXT PRIMARY KEY,
+                scope TEXT NOT NULL,
+                source_hash TEXT NOT NULL,
+                model_used TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         # Safe migrations for pre-existing databases
@@ -276,5 +285,6 @@ def clear_vault_data(db_path: Path = DB_PATH) -> None:
         conn.execute("DELETE FROM chunks_fts")
         conn.execute("DELETE FROM chunks")
         conn.execute("DELETE FROM note_digests")
+        conn.execute("DELETE FROM synthesis_chapters")
         conn.execute("DELETE FROM notes")
         conn.execute("DELETE FROM self_profile")

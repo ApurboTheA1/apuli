@@ -62,6 +62,7 @@ class AppConfig:
     provider: str = "ollama"  # ollama | openai | anthropic | gemini | openai_compatible
     chat_model: str = "qwen2.5:7b"
     memory_model: str = ""  # Optional dedicated model for memory distillation & self-portrait
+    final_synthesis_model: str = ""  # Optional stronger model for final Self-Portrait pass ("" = Auto 14B if installed)
     embedding_model: str = "nomic-embed-text"
     excluded_folders: List[str] = field(default_factory=list)
     journal_folders: List[str] = field(default_factory=list)

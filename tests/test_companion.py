@@ -787,4 +787,84 @@ def test_deep_synthesis_reduce_terminates_on_long_digests(tmp_path: Path, monkey
     )
 
 
+def test_monthly_chapter_caching_and_final_model_upgrade(tmp_path: Path, monkeypatch):
+    from backend import memory as memory_mod
+
+    vault = tmp_path / "Vault"
+    (vault / "Journal").mkdir(parents=True)
+    # 5 notes in 2024-03 (>3 so LLM creates a monthly chapter) + 5 notes in 2024-04
+    for m in (3, 4):
+        for d in range(1, 6):
+            (vault / "Journal" / f"2024-{m:02d}-{d:02d}.md").write_text(
+                f"# Entry {m}-{d}\nDeep personal reflection on creativity, friendships, and studying in month {m}.",
+                encoding="utf-8",
+            )
+
+    db_file = tmp_path / "chapters.db"
+    init_db(db_file)
+    cfg = AppConfig(
+        vault_path=str(vault),
+        journal_folders=["Journal"],
+        ollama_url="http://127.0.0.1:11434",
+        chat_model="qwen2.5:7b",
+    )
+    indexer = VaultIndexer(lambda: cfg, db_path=db_file)
+    asyncio.run(indexer.index_vault())
+
+    async def fake_check_ollama(url):
+        return {"online": True, "chat_models": ["qwen2.5:7b", "qwen2.5:14b"]}
+
+    seen_models = []
+
+    async def tracking_chat_once(cfg_arg, model_spec, messages, temperature=0.3, **kwargs):
+        seen_models.append((model_spec, messages[0]["content"][:60]))
+        p = messages[0]["content"]
+        if "CORE JOURNAL & PERIODIC REFLECTIONS" in p:
+            return "### Core Identity & Values\nDeep portrait written cleanly."
+        if "Analyze these" in p:
+            import json as _json
+            return _json.dumps({str(k): "Rich insight from journal entry." for k in range(1, 12)})
+        return "- Monthly reflection bullet preserving events and feelings."
+
+    monkeypatch.setattr(memory_mod, "check_ollama", fake_check_ollama)
+    monkeypatch.setattr(memory_mod, "provider_chat_once", tracking_chat_once)
+
+    async def run_once():
+        out = []
+        async for ev in memory_mod.deep_synthesize_self_profile_stream(cfg, db_path=db_file):
+            out.append(ev)
+        return out
+
+    # Pass 1: digests 10 notes, creates 2 monthly chapters with 7b, writes final portrait with 14b
+    ev1 = asyncio.run(run_once())
+    done1 = ev1[-1]
+    assert done1["stage"] == "done"
+    assert done1["final_model"] == "qwen2.5:14b"
+    assert done1["chapters_generated"] == 2
+    assert seen_models[-1][0] == "qwen2.5:14b"
+    assert all(m == "qwen2.5:7b" for m, _ in seen_models[:-1])
+
+    # Pass 2 (no changes): reuses both monthly chapters (0 chapters_generated, only 1 final 14b call)
+    seen_models.clear()
+    ev2 = asyncio.run(run_once())
+    done2 = ev2[-1]
+    assert done2["chapters_reused"] == 2
+    assert done2["chapters_generated"] == 0
+    assert len(seen_models) == 1
+    assert seen_models[0][0] == "qwen2.5:14b"
+
+    # Pass 3 (add 1 new note to 2024-04): regenerates ONLY 2024-04 (chapters_reused=1, chapters_generated=1)
+    (vault / "Journal" / "2024-04-20.md").write_text(
+        "# Entry 4-20\nA brand new reflective note added later in April 2024.",
+        encoding="utf-8",
+    )
+    asyncio.run(indexer.index_vault())
+    seen_models.clear()
+    ev3 = asyncio.run(run_once())
+    done3 = ev3[-1]
+    assert done3["chapters_reused"] == 1
+    assert done3["chapters_generated"] == 1
+
+
+
 
