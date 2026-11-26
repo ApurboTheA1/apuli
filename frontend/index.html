@@ -5,9 +5,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Apuli — Local Obsidian Companion</title>
   <link rel="icon" type="image/svg+xml" href="/static/apuli-icon.svg" />
-  <link rel="stylesheet" href="/static/styles.css?v=10" />
+  <link rel="stylesheet" href="/static/styles.css?v=11" />
 </head>
 <body>
+  <!-- Network / PIN Lock Overlay -->
+  <div class="pin-lock-overlay hidden" id="pinLockOverlay">
+    <div class="pin-lock-card">
+      <div class="brand-mark" style="margin: 0 auto 12px;"><img src="/static/apuli-icon.svg" alt="Apuli" /></div>
+      <h2 id="pinLockTitle">Apuli is Locked</h2>
+      <p class="muted pin-lock-sub" id="pinLockDesc">
+        Enter your Network PIN to access your Obsidian companion over your local network.
+      </p>
+      <form id="pinUnlockForm" class="pin-unlock-form">
+        <input
+          type="password"
+          id="pinUnlockInput"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          placeholder="Enter PIN"
+        />
+        <button type="submit" class="btn-primary" id="pinUnlockBtn">Unlock</button>
+      </form>
+      <div class="pin-error hidden" id="pinUnlockError"></div>
+    </div>
+  </div>
+
   <div class="app-shell">
     <!-- Sidebar -->
     <aside class="sidebar">
@@ -97,6 +119,7 @@
               <svg class="icon-svg" viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4"/></svg>
               <span>Remember Chat</span>
             </button>
+            <button class="btn-ghost hidden" id="lockSessionBtn" title="Lock this remote/PIN session">Lock</button>
           </div>
         </header>
 
@@ -448,6 +471,30 @@
 
               <div class="frontier-section" style="grid-column: 1 / -1;">
                 <details>
+                  <summary>Network Access &amp; PIN Lock (Access Apuli from Phone / Wi-Fi Safely)</summary>
+                  <div class="settings-grid" style="margin-top: 12px;">
+                    <label class="checkbox-inline">
+                      <input type="checkbox" id="setAllowLan" />
+                      <span>Allow Local Network (LAN) access on restart (binds <code>0.0.0.0</code>, or run <code>run.py --lan</code>)</span>
+                    </label>
+                    <label>
+                      <span>Network PIN (4–12 digits/characters) <span class="hw-badge" id="pinStatusBadge">Not Set</span></span>
+                      <div style="display:flex; gap:6px;">
+                        <input type="password" id="setNetworkPin" inputmode="numeric" placeholder="Enter new PIN to set or change" autocomplete="new-password" style="flex:1;" />
+                        <button type="button" class="btn-ghost hidden" id="clearPinBtn">Clear PIN</button>
+                      </div>
+                    </label>
+                    <label class="checkbox-inline">
+                      <input type="checkbox" id="setRequirePinLocalhost" />
+                      <span>Also require PIN when opening on this PC (<code>127.0.0.1</code>)</span>
+                    </label>
+                    <div class="lan-info-box" id="lanInfoBox" style="grid-column: 1 / -1;"></div>
+                  </div>
+                </details>
+              </div>
+
+              <div class="frontier-section" style="grid-column: 1 / -1;">
+                <details>
                   <summary>Optional Frontier AI APIs (Only used if selected — keys stay in local <code>data/config.json</code>)</summary>
                   <div class="settings-grid" style="margin-top: 12px;">
                     <label>
@@ -524,6 +571,6 @@
   </div>
 
   <div class="toast" id="toast"></div>
-  <script src="/static/app.js?v=10"></script>
+  <script src="/static/app.js?v=11"></script>
 </body>
 </html>

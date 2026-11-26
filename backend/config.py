@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List
@@ -13,6 +16,35 @@ CONFIG_PATH = DATA_DIR / "config.json"
 DB_PATH = DATA_DIR / "companion.db"
 
 SYSTEM_EXCLUDED_DIRS = [".obsidian", ".trash", ".git", ".stfolder", "node_modules"]
+
+
+def hash_pin(pin: str) -> str:
+    """Hash a network access PIN with a random per-PIN salt using PBKDF2-SHA256."""
+    clean = (pin or "").strip()
+    if not clean:
+        return ""
+    salt_hex = secrets.token_hex(16)
+    digest_hex = hashlib.pbkdf2_hmac(
+        "sha256", clean.encode("utf-8"), bytes.fromhex(salt_hex), 200_000
+    ).hex()
+    return f"pbkdf2_sha256${salt_hex}${digest_hex}"
+
+
+def verify_pin(pin: str, stored_hash: str) -> bool:
+    """Constant-time verification of a PIN against a stored PBKDF2-SHA256 hash."""
+    clean = (pin or "").strip()
+    if not clean or not stored_hash:
+        return False
+    parts = stored_hash.split("$")
+    if len(parts) != 3 or parts[0] != "pbkdf2_sha256":
+        return False
+    try:
+        salt = bytes.fromhex(parts[1])
+        expected = bytes.fromhex(parts[2])
+    except ValueError:
+        return False
+    candidate = hashlib.pbkdf2_hmac("sha256", clean.encode("utf-8"), salt, 200_000)
+    return hmac.compare_digest(candidate, expected)
 
 
 def _mask_key(val: str) -> str:
@@ -50,6 +82,9 @@ class AppConfig:
     enable_ram_cache: bool = True   # SQLite 256MB mmap + 64MB page cache
     ollama_keep_alive: str = "20m"  # "0", "5m", "20m", "60m", "-1"
     ollama_num_thread: int = 0      # 0 = Ollama auto; >0 caps CPU threads for Ollama
+    allow_lan: bool = False         # Bind 0.0.0.0 for local Wi-Fi / LAN access
+    network_pin_hash: str = ""      # PBKDF2-SHA256 hash required for remote LAN access
+    require_pin_on_localhost: bool = False  # Optionally lock localhost too
 
     # Optional Frontier / External API keys (kept local in data/config.json)
     openai_api_key: str = ""
@@ -67,6 +102,8 @@ class AppConfig:
 
     def to_public_dict(self) -> dict:
         data = asdict(self)
+        data.pop("network_pin_hash", None)
+        data["has_network_pin"] = bool(self.network_pin_hash)
         data["has_openai_key"] = bool(self.openai_api_key)
         data["has_anthropic_key"] = bool(self.anthropic_api_key)
         data["has_gemini_key"] = bool(self.gemini_api_key)

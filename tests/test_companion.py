@@ -662,3 +662,75 @@ def test_vault_analytics_temporal_and_on_this_day(tmp_path: Path, monkeypatch):
         assert "timeline" in payload
         assert "clusters" in payload
 
+
+def test_network_lan_pin_authentication_and_lockout(tmp_path: Path, monkeypatch):
+    from backend import app as app_mod
+    from backend.config import hash_pin, verify_pin
+
+    # 1. PIN hashing & constant-time verification
+    h = hash_pin("2468")
+    assert h.startswith("pbkdf2_sha256$")
+    assert verify_pin("2468", h) is True
+    assert verify_pin("9999", h) is False
+
+    db_file = tmp_path / "pin_test.db"
+    init_db(db_file)
+    state_cfg = AppConfig(ollama_url="http://127.0.0.1:59999")
+
+    def fake_load():
+        return state_cfg
+
+    def fake_save(new_cfg):
+        nonlocal state_cfg
+        state_cfg = new_cfg
+        return new_cfg
+
+    monkeypatch.setattr(app_mod, "DB_PATH", db_file)
+    monkeypatch.setattr(app_mod, "load_config", fake_load)
+    monkeypatch.setattr(app_mod, "save_config", fake_save)
+    monkeypatch.setattr(app_mod.indexer, "_db_path", db_file)
+    monkeypatch.setattr(app_mod.retriever, "_db_path", db_file)
+    app_mod._auth_sessions.clear()
+    app_mod._auth_failures.clear()
+
+    # 2. Remote client blocked (403) when no PIN has been configured yet
+    with TestClient(app_mod.app, client=("192.168.1.50", 51000)) as remote_client:
+        assert remote_client.get("/").status_code == 200
+        st = remote_client.get("/api/auth/status").json()
+        assert st["is_remote"] is True
+        assert st["locked"] is True
+        assert st["blocked_no_pin"] is True
+        assert remote_client.get("/api/status").status_code == 403
+
+    # 3. Localhost stays unlocked and sets the Network PIN via /api/settings
+    with TestClient(app_mod.app, client=("127.0.0.1", 51001)) as local_client:
+        res = local_client.post(
+            "/api/settings",
+            json={"allow_lan": True, "network_pin": "2468"},
+        )
+        assert res.status_code == 200
+        pub = res.json()["config"]
+        assert "network_pin_hash" not in pub
+        assert pub["has_network_pin"] is True
+        assert pub["allow_lan"] is True
+        assert local_client.get("/api/status").status_code == 200
+
+    # 4. Remote client requires PIN, enforces lockout after 5 bad tries, unlocks cleanly with right PIN
+    with TestClient(app_mod.app, client=("192.168.1.51", 51002)) as bad_remote:
+        assert bad_remote.get("/api/status").status_code == 401
+        for _ in range(4):
+            assert bad_remote.post("/api/auth/unlock", json={"pin": "0000"}).status_code == 401
+        assert bad_remote.post("/api/auth/unlock", json={"pin": "0000"}).status_code == 429
+        assert bad_remote.get("/api/auth/status").json()["retry_after_seconds"] > 0
+
+    with TestClient(app_mod.app, client=("192.168.1.52", 51003)) as good_remote:
+        assert good_remote.get("/api/status").status_code == 401
+        unlock = good_remote.post("/api/auth/unlock", json={"pin": "2468"})
+        assert unlock.status_code == 200
+        assert good_remote.get("/api/status").status_code == 200
+
+        # Lock session invalidates cookie immediately
+        assert good_remote.post("/api/auth/lock").status_code == 200
+        assert good_remote.get("/api/status").status_code == 401
+
+

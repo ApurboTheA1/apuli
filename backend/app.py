@@ -3,22 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
+import secrets
+import socket
 import string
+import time
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .analytics import compute_vault_analytics, get_on_this_day, parse_temporal_filter
-from .config import DB_PATH, load_config, save_config
+from .config import AppConfig, DB_PATH, hash_pin, load_config, save_config, verify_pin
 from .db import (
     clear_vault_data,
     db_session,
@@ -248,6 +252,144 @@ if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 
+# --- Network / LAN Access & PIN Lock ---
+
+SESSION_COOKIE_NAME = "apuli_session"
+SESSION_TTL_SECONDS = 60 * 60 * 24  # 24 hours
+MAX_PIN_FAILURES = 5
+PIN_LOCKOUT_SECONDS = 60
+
+_auth_sessions: Dict[str, float] = {}
+_auth_failures: Dict[str, Dict[str, Any]] = {}
+_PUBLIC_AUTH_PATHS = {"/", "/favicon.ico", "/api/auth/status", "/api/auth/unlock", "/api/auth/lock"}
+
+
+def _is_loopback_ip(ip_str: str) -> bool:
+    clean = (ip_str or "").strip().lower()
+    if not clean or clean in {"testclient", "localhost"}:
+        return True
+    try:
+        ip_obj = ipaddress.ip_address(clean)
+        if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
+            return ip_obj.ipv4_mapped.is_loopback
+        return ip_obj.is_loopback
+    except ValueError:
+        return False
+
+
+def _is_loopback_request(request: Request) -> bool:
+    direct = request.client.host if request.client else ""
+    if not _is_loopback_ip(direct):
+        return False
+    # If running behind a reverse proxy on localhost (e.g. Tailscale Serve / Caddy),
+    # inspect forwarded headers so remote clients still go through PIN auth.
+    fwd = request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip") or ""
+    if fwd:
+        first_hop = fwd.split(",")[0].strip()
+        if first_hop and not _is_loopback_ip(first_hop):
+            return False
+    return True
+
+
+def _extract_client_ip(request: Request) -> str:
+    direct = request.client.host if request.client else "unknown"
+    if _is_loopback_ip(direct):
+        fwd = request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip") or ""
+        if fwd:
+            return fwd.split(",")[0].strip()
+    return direct
+
+
+def _get_lan_urls(port: int = 8420) -> List[str]:
+    ips: List[str] = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))
+            primary = s.getsockname()[0]
+            if primary and not primary.startswith("127."):
+                ips.append(primary)
+    except Exception:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip and not ip.startswith("127.") and ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+    return [f"http://{ip}:{port}" for ip in ips]
+
+
+def _is_session_valid(request: Request) -> bool:
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        return False
+    exp = _auth_sessions.get(token)
+    if not exp:
+        return False
+    if time.monotonic() > exp:
+        _auth_sessions.pop(token, None)
+        return False
+    return True
+
+
+def _retry_after_for_ip(ip: str) -> int:
+    rec = _auth_failures.get(ip)
+    if not rec:
+        return 0
+    rem = int(rec.get("locked_until", 0.0) - time.monotonic())
+    if rem <= 0:
+        if rec.get("locked_until", 0.0) > 0:
+            _auth_failures.pop(ip, None)
+        return 0
+    return rem
+
+
+def _auth_status_for_request(request: Request, cfg: AppConfig) -> Dict[str, Any]:
+    is_remote = not _is_loopback_request(request)
+    has_pin = bool(cfg.network_pin_hash)
+    needs_auth = is_remote or (cfg.require_pin_on_localhost and has_pin)
+    authenticated = (not needs_auth) or _is_session_valid(request)
+    client_ip = _extract_client_ip(request)
+    return {
+        "locked": not authenticated,
+        "authenticated": authenticated,
+        "is_remote": is_remote,
+        "has_pin": has_pin,
+        "allow_lan": cfg.allow_lan,
+        "require_pin_on_localhost": cfg.require_pin_on_localhost,
+        "blocked_no_pin": bool(is_remote and not has_pin),
+        "retry_after_seconds": _retry_after_for_ip(client_ip),
+    }
+
+
+@app.middleware("http")
+async def _network_pin_middleware(request: Request, call_next):
+    path = request.url.path
+    if path in _PUBLIC_AUTH_PATHS or path.startswith("/static/"):
+        return await call_next(request)
+
+    cfg = load_config()
+    st = _auth_status_for_request(request, cfg)
+    if st["blocked_no_pin"]:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Remote access is blocked until a Network PIN is configured in Settings on the host computer.",
+                "code": "pin_not_configured",
+            },
+        )
+    if st["locked"]:
+        return JSONResponse(
+            status_code=401,
+            content={
+                "detail": "Network PIN required.",
+                "code": "pin_required",
+            },
+        )
+    return await call_next(request)
+
+
 # --- Pydantic Models ---
 
 
@@ -276,6 +418,10 @@ class SettingsUpdate(BaseModel):
     enable_ram_cache: Optional[bool] = None
     ollama_keep_alive: Optional[str] = None
     ollama_num_thread: Optional[int] = None
+    allow_lan: Optional[bool] = None
+    require_pin_on_localhost: Optional[bool] = None
+    network_pin: Optional[str] = None
+    clear_network_pin: bool = False
     openai_api_key: Optional[str] = None
     openai_model: Optional[str] = None
     anthropic_api_key: Optional[str] = None
@@ -335,6 +481,10 @@ class SwitchVaultReq(BaseModel):
     vault_path: str
 
 
+class PinUnlockReq(BaseModel):
+    pin: str
+
+
 def _obsidian_uri(vault_path: str, note_rel_path: str) -> str:
     if not vault_path:
         return "#"
@@ -384,6 +534,71 @@ def _get_cached_analytics(cfg) -> Dict[str, Any]:
     return _analytics_cache
 
 
+@app.get("/api/auth/status")
+async def api_auth_status(request: Request):
+    cfg = load_config()
+    return _auth_status_for_request(request, cfg)
+
+
+@app.post("/api/auth/unlock")
+async def api_auth_unlock(req: PinUnlockReq, request: Request):
+    cfg = load_config()
+    if not cfg.network_pin_hash:
+        raise HTTPException(
+            status_code=403,
+            detail="No Network PIN configured on host. Set a PIN in Settings first.",
+        )
+
+    client_ip = _extract_client_ip(request)
+    retry_after = _retry_after_for_ip(client_ip)
+    if retry_after > 0:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many incorrect attempts. Try again in {retry_after}s.",
+        )
+
+    if not verify_pin(req.pin, cfg.network_pin_hash):
+        rec = _auth_failures.setdefault(client_ip, {"count": 0, "locked_until": 0.0})
+        rec["count"] += 1
+        if rec["count"] >= MAX_PIN_FAILURES:
+            rec["locked_until"] = time.monotonic() + PIN_LOCKOUT_SECONDS
+            rec["count"] = 0
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many incorrect attempts. Locked for {PIN_LOCKOUT_SECONDS}s.",
+            )
+        remaining = MAX_PIN_FAILURES - rec["count"]
+        raise HTTPException(
+            status_code=401,
+            detail=f"Incorrect PIN ({remaining} attempts left).",
+        )
+
+    _auth_failures.pop(client_ip, None)
+    token = secrets.token_urlsafe(32)
+    _auth_sessions[token] = time.monotonic() + SESSION_TTL_SECONDS
+    resp = JSONResponse({"unlocked": True})
+    resp.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        secure=False,
+    )
+    return resp
+
+
+@app.post("/api/auth/lock")
+async def api_auth_lock(request: Request):
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token:
+        _auth_sessions.pop(token, None)
+    resp = JSONResponse({"locked": True})
+    resp.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return resp
+
+
 @app.get("/api/analytics")
 async def api_get_analytics():
     cfg = load_config()
@@ -391,7 +606,7 @@ async def api_get_analytics():
 
 
 @app.get("/api/status")
-async def get_status():
+async def get_status(request: Request):
     cfg = load_config()
     ollama = await check_ollama(cfg.ollama_url)
     hw = detect_hardware()
@@ -435,8 +650,19 @@ async def get_status():
     for item in on_this_day:
         item["obsidian_uri"] = _obsidian_uri(cfg.vault_path, item["note_path"])
 
+    port = int(os.environ.get("APULI_PORT", "8420") or 8420)
+    bound_host = os.environ.get("APULI_BIND_HOST", "127.0.0.1")
+
     return {
         "config": cfg.to_public_dict(),
+        "network": {
+            "allow_lan": cfg.allow_lan,
+            "bound_host": bound_host,
+            "port": port,
+            "lan_urls": _get_lan_urls(port),
+            "is_remote": not _is_loopback_request(request),
+            "has_network_pin": bool(cfg.network_pin_hash),
+        },
         "needs_onboarding": not (cfg.vault_path and Path(cfg.vault_path).exists()),
         "candidate_vaults": _detect_candidate_vaults(),
         "ollama": ollama,
@@ -590,6 +816,22 @@ async def update_settings(payload: SettingsUpdate):
         cfg.gemini_api_key = ""
     if updates.pop("clear_custom_key", False):
         cfg.custom_api_key = ""
+
+    updates.pop("network_pin_hash", None)
+    clear_pin = updates.pop("clear_network_pin", False)
+    new_pin = updates.pop("network_pin", None)
+    if clear_pin:
+        cfg.network_pin_hash = ""
+        _auth_sessions.clear()
+    elif new_pin is not None:
+        clean_pin = str(new_pin).strip()
+        if clean_pin and "••••" not in clean_pin:
+            if len(clean_pin) < 4:
+                raise HTTPException(
+                    status_code=400, detail="Network PIN must be at least 4 characters."
+                )
+            cfg.network_pin_hash = hash_pin(clean_pin)
+            _auth_sessions.clear()
 
     for k, v in updates.items():
         if hasattr(cfg, k):

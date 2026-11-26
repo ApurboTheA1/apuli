@@ -10,6 +10,8 @@ const state = {
   memories: [],
   profile: null,
   wasDeepActive: false,
+  booted: false,
+  pollTimer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -76,6 +78,53 @@ function renderMarkdown(md) {
     .join("\n");
 }
 
+function showLockScreen(authSt) {
+  const overlay = $("pinLockOverlay");
+  const title = $("pinLockTitle");
+  const desc = $("pinLockDesc");
+  const form = $("pinUnlockForm");
+  const errEl = $("pinUnlockError");
+  const input = $("pinUnlockInput");
+  if (!overlay) return;
+
+  errEl.classList.add("hidden");
+  errEl.textContent = "";
+
+  if (authSt?.blocked_no_pin) {
+    title.textContent = "Remote Access Blocked";
+    desc.textContent =
+      "No Network PIN is configured yet. Open Apuli on your host computer → Vault, Hardware & Models → Network Access & PIN Lock to set a PIN first.";
+    form.classList.add("hidden");
+  } else {
+    title.textContent = "Apuli is Locked";
+    desc.textContent = authSt?.is_remote
+      ? "Enter your Network PIN to access your Obsidian companion over your local network."
+      : "Enter your PIN to unlock Apuli.";
+    form.classList.remove("hidden");
+    if (authSt?.retry_after_seconds > 0) {
+      errEl.textContent = `Too many attempts. Try again in ${authSt.retry_after_seconds}s.`;
+      errEl.classList.remove("hidden");
+    }
+    setTimeout(() => input?.focus(), 60);
+  }
+  overlay.classList.remove("hidden");
+}
+
+function hideLockScreen() {
+  $("pinLockOverlay")?.classList.add("hidden");
+  if ($("pinUnlockInput")) $("pinUnlockInput").value = "";
+}
+
+async function checkAuthStatus() {
+  try {
+    const res = await fetch("/api/auth/status");
+    if (!res.ok) return { locked: false };
+    return await res.json();
+  } catch {
+    return { locked: false };
+  }
+}
+
 async function api(url, options = {}) {
   const res = await fetch(url, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -83,7 +132,24 @@ async function api(url, options = {}) {
   });
   if (!res.ok) {
     const detail = await res.text();
-    throw new Error(detail || `HTTP ${res.status}`);
+    let msg = detail || `HTTP ${res.status}`;
+    try {
+      const parsed = JSON.parse(detail);
+      if (parsed?.detail) msg = parsed.detail;
+      if (
+        !url.startsWith("/api/auth/") &&
+        (res.status === 401 || parsed?.code === "pin_not_configured")
+      ) {
+        const st = await checkAuthStatus();
+        if (st.locked) showLockScreen(st);
+      }
+    } catch {
+      if (!url.startsWith("/api/auth/") && res.status === 401) {
+        const st = await checkAuthStatus();
+        if (st.locked) showLockScreen(st);
+      }
+    }
+    throw new Error(msg);
   }
   return res.json();
 }
@@ -140,6 +206,12 @@ async function loadStatus() {
   applyFontSetting(cfg.ui_font, cfg.font_size);
   $("brandTitle").textContent = cfg.companion_name || "Apuli";
   $("welcomeHeading").textContent = `Hey ${cfg.user_name && cfg.user_name !== "Friend" ? cfg.user_name : "there"}, I’m here.`;
+
+  const lockBtn = $("lockSessionBtn");
+  if (lockBtn) {
+    const canLock = !!cfg.has_network_pin && (!!data.network?.is_remote || !!cfg.require_pin_on_localhost);
+    lockBtn.classList.toggle("hidden", !canLock);
+  }
 
   // Onboarding card visibility
   if (data.needs_onboarding) {
@@ -425,6 +497,30 @@ function renderSettingsPanel(data) {
   $("setEmbedBatchSize").value = cfg.embed_batch_size ?? 48;
   $("setKeepAlive").value = cfg.ollama_keep_alive ?? "20m";
   $("setRamCache").checked = cfg.enable_ram_cache !== false;
+
+  $("setAllowLan").checked = !!cfg.allow_lan;
+  $("setRequirePinLocalhost").checked = !!cfg.require_pin_on_localhost;
+  $("setNetworkPin").value = "";
+  const pinBadge = $("pinStatusBadge");
+  if (pinBadge) {
+    pinBadge.textContent = cfg.has_network_pin ? "PIN Active" : "Not Set";
+    pinBadge.classList.toggle("ok", !!cfg.has_network_pin);
+  }
+  $("clearPinBtn")?.classList.toggle("hidden", !cfg.has_network_pin);
+
+  const net = data.network || {};
+  const lanBox = $("lanInfoBox");
+  if (lanBox) {
+    const urls = (net.lan_urls || []).map((u) => `<code>${escapeHtml(u)}</code>`).join(" · ");
+    const isLanBound = net.bound_host === "0.0.0.0";
+    if (isLanBound) {
+      lanBox.innerHTML = cfg.has_network_pin
+        ? `<div><strong>LAN Mode Active:</strong> Open ${urls || `<code>http://&lt;your-pc-ip&gt;:${net.port || 8420}</code>`} on devices on your Wi-Fi (allow port ${net.port || 8420} in Windows Firewall).</div>`
+        : `<div><strong>LAN Mode Bound (0.0.0.0), Waiting for PIN:</strong> Set a Network PIN above so remote devices can unlock safely.</div>`;
+    } else {
+      lanBox.innerHTML = `<div class="muted">Currently bound strictly to <code>127.0.0.1</code> (this PC only). ${urls ? `When LAN access is enabled &amp; restarted, reach it at ${urls}.` : ""}</div>`;
+    }
+  }
 
   $("setOpenaiKey").value = cfg.openai_api_key || "";
   $("setOpenaiModel").value = cfg.openai_model || "gpt-4o-mini";
@@ -797,7 +893,13 @@ async function sendMessage(text) {
       }),
     });
 
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        const st = await checkAuthStatus();
+        if (st.locked) showLockScreen(st);
+      }
+      throw new Error(`HTTP ${res.status}`);
+    }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -1412,8 +1514,36 @@ function bindEvents() {
     applyFontSetting(chosen, $("setFontSize").value);
   };
 
+  $("lockSessionBtn").onclick = async () => {
+    try {
+      await api("/api/auth/lock", { method: "POST" });
+      const st = await checkAuthStatus();
+      showLockScreen(st);
+    } catch (err) {
+      showToast(`Lock failed: ${err.message}`);
+    }
+  };
+
+  $("clearPinBtn").onclick = async () => {
+    try {
+      await api("/api/settings", {
+        method: "POST",
+        body: JSON.stringify({ clear_network_pin: true }),
+      });
+      showToast("Network PIN cleared.");
+      await loadStatus();
+    } catch (err) {
+      showToast(`Failed: ${err.message}`);
+    }
+  };
+
   $("settingsForm").onsubmit = async (e) => {
     e.preventDefault();
+    const newPinVal = ($("setNetworkPin").value || "").trim();
+    if (newPinVal && newPinVal.length < 4) {
+      showToast("Network PIN must be at least 4 characters.");
+      return;
+    }
     const excluded = [];
     document.querySelectorAll(".folder-toggle").forEach((cb) => {
       if (!cb.checked) excluded.push(cb.dataset.folder);
@@ -1444,6 +1574,9 @@ function bindEvents() {
         embed_batch_size: parseInt($("setEmbedBatchSize").value, 10) || 48,
         ollama_keep_alive: $("setKeepAlive").value,
         enable_ram_cache: $("setRamCache").checked,
+        allow_lan: $("setAllowLan").checked,
+        require_pin_on_localhost: $("setRequirePinLocalhost").checked,
+        ...(newPinVal ? { network_pin: newPinVal } : {}),
         chat_model: $("setChatModel").value,
         memory_model: $("setMemoryModel").value,
         embedding_model: $("setEmbedModel").value.trim(),
@@ -1472,20 +1605,61 @@ function bindEvents() {
   };
 }
 
+async function bootAppData() {
+  if (!state.booted) {
+    state.booted = true;
+    await Promise.all([loadStatus(), loadConversations()]);
+    if (!state.pollTimer) {
+      state.pollTimer = setInterval(() => {
+        if (!$("pinLockOverlay")?.classList.contains("hidden")) return;
+        const idxState = state.status?.index_status?.state;
+        const deepState = state.status?.deep_status?.state;
+        if (
+          (idxState && idxState !== "idle" && idxState !== "error") ||
+          deepState === "reading" ||
+          deepState === "reducing"
+        ) {
+          loadStatus();
+        }
+      }, 1800);
+    }
+  } else {
+    await Promise.all([loadStatus(), loadConversations()]);
+  }
+}
+
 async function init() {
   bindEvents();
-  await Promise.all([loadStatus(), loadConversations()]);
-  setInterval(() => {
-    const idxState = state.status?.index_status?.state;
-    const deepState = state.status?.deep_status?.state;
-    if (
-      (idxState && idxState !== "idle" && idxState !== "error") ||
-      deepState === "reading" ||
-      deepState === "reducing"
-    ) {
-      loadStatus();
+
+  $("pinUnlockForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const pin = ($("pinUnlockInput").value || "").trim();
+    const errEl = $("pinUnlockError");
+    const btn = $("pinUnlockBtn");
+    if (!pin) return;
+    btn.disabled = true;
+    errEl.classList.add("hidden");
+    try {
+      await api("/api/auth/unlock", {
+        method: "POST",
+        body: JSON.stringify({ pin }),
+      });
+      hideLockScreen();
+      await bootAppData();
+    } catch (err) {
+      errEl.textContent = err.message || "Unlock failed.";
+      errEl.classList.remove("hidden");
+    } finally {
+      btn.disabled = false;
     }
-  }, 1800);
+  };
+
+  const authSt = await checkAuthStatus();
+  if (authSt.locked) {
+    showLockScreen(authSt);
+  } else {
+    await bootAppData();
+  }
 }
 
 init();

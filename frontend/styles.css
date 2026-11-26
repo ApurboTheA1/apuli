@@ -1369,6 +1369,70 @@ html, body {
   margin-right: 5px;
 }
 
+.pin-lock-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  background: rgba(14, 15, 19, 0.94);
+  backdrop-filter: blur(8px);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.pin-lock-overlay.hidden {
+  display: none !important;
+}
+
+.pin-lock-card {
+  width: 100%;
+  max-width: 390px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px 24px;
+  text-align: center;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+}
+
+.pin-lock-card h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+}
+
+.pin-lock-sub {
+  font-size: 13px;
+  margin: 0 0 18px;
+  line-height: 1.5;
+}
+
+.pin-unlock-form {
+  display: flex;
+  gap: 8px;
+}
+
+.pin-unlock-form input {
+  flex: 1;
+  text-align: center;
+  font-size: 16px;
+  letter-spacing: 2px;
+}
+
+.pin-error {
+  margin-top: 12px;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+
+.lan-info-box {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { display: none; }
