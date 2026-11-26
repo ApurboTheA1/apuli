@@ -1,8 +1,27 @@
-# Apuli — Local-First Obsidian Companion
+<p align="center">
+  <img src="frontend/apuli-icon.svg" alt="Apuli Logo" width="96" />
+</p>
 
-> *A personal AI companion connected to your Obsidian vault — built to talk with you, know you over time, and help you remember yourself.*
+<h1 align="center">Apuli — Local-First Obsidian Companion</h1>
 
-Named after what my grandfather used to call me, **Apuli** turns your plain-Markdown Obsidian vault into a living, reflective memory companion. It runs **local-first** on your own hardware using [Ollama](https://ollama.com), keeps your journals and conversations in a private SQLite database on your machine, and optionally lets you plug in frontier cloud APIs when you want extra reasoning power.
+<p align="center">
+  <em>A personal AI &amp; classic ML companion connected to your Obsidian vault — built to talk with you, know you over time, and help you remember yourself.</em>
+</p>
+
+Named after what my grandfather used to call me, **Apuli** turns your plain-Markdown Obsidian vault into a living, reflective memory companion. It runs **local-first** on your own hardware using [Ollama](https://ollama.com) plus classic NumPy/SQLite machine learning and graph analytics, keeps your journals and conversations in a private SQLite database on your machine, and optionally lets you plug in frontier cloud APIs or access your PC safely over LAN with a salted PIN lock.
+
+---
+
+## Screenshots
+
+### Companion Chat & "On This Day" Memory Resurfacer
+![Apuli Companion Welcome & On This Day](docs/screenshots/chat-welcome.png)
+
+### Cited Obsidian Recall & Pattern Mirror
+![Apuli Cited Chat](docs/screenshots/chat-cited.png)
+
+### Vault Intelligence (Classic ML Clustering, Relationships & Mood Pulse)
+![Apuli Vault Intelligence](docs/screenshots/vault-intelligence.png)
 
 ---
 
@@ -22,12 +41,14 @@ Apuli connects directly to your vault on disk so it can:
 ## Key Features
 
 - **Local-First Priority (Ollama):** Works 100% offline with local LLMs and local embeddings (`nomic-embed-text`). Nothing leaves your computer.
-- **Hardware Advisor & 1-Click Model Pulls:** Automatically detects your CPU, RAM, and GPU/VRAM (NVIDIA, Apple Silicon, or CPU-only) and recommends local Ollama models suited to your machine — with 1-click download inside the web UI.
+- **Classic ML & Graph Vault Intelligence (Zero LLM):** Pure NumPy Spherical K-Means topic clustering (`nomic-embed-text` vectors + TF-IDF labels), `[[wikilink]]` PageRank centrality, `People/` relationship timelines (linked + unlinked mentions), monthly writing/sentiment pulse, and **"On This Day"** memory resurfacing.
+- **Two-Tier Monthly Self-Portrait Synthesis:** Reads your vault chronologically with cached per-note digests and cached monthly journal chapters (`synthesis_chapters`), letting a fast VRAM model (e.g. `7B`) digest notes and automatically handing off the final Self-Portrait write to a deeper model (e.g. `14B`) if installed.
+- **Hardware Advisor & Tunable Performance:** Automatically detects CPU threads, RAM, and GPU/VRAM, lets you configure CPU parsing threads, Ollama thread caps, embedding batch size, SQLite RAM caching (`mmap` + 64 MB cache), and model `keep_alive` directly in Settings.
+- **Optional LAN Access with PBKDF2 PIN Lock:** Run `python run.py --lan` (or toggle in Settings) to open Apuli from your phone/tablet on the same Wi‑Fi behind a salted PBKDF2-SHA256 PIN lock screen with brute-force rate limiting.
 - **Optional Frontier AI APIs:** Want to occasionally use **OpenAI**, **Anthropic Claude**, **Google Gemini**, or any **OpenAI-compatible** endpoint (LM Studio, OpenRouter, Groq)? Add your key locally in Settings while keeping vault indexing and embeddings on your machine.
-- **Hybrid Obsidian Retrieval:** Combines SQLite FTS5 keyword search, local vector cosine similarity, recency awareness, and 1-hop `[[wikilink]]` graph expansion.
-- **Live Vault Sync:** Watches your Obsidian folder with `watchdog` and incrementally re-indexes notes within ~1.5 seconds of edits.
-- **Save Reflections Back to Obsidian:** Export meaningful insights from any chat directly into your vault as dated Markdown notes.
-- **Zero-CDN Offline Web UI:** Clean dark-journal interface served locally on `http://127.0.0.1:8420`.
+- **Hybrid Obsidian Retrieval + Temporal Query Filter:** Combines SQLite FTS5 keyword search, local vector cosine similarity, deterministic date-window extraction (`"April 2023"`, `"last month"`, `"in 2024"`), and PageRank-weighted 1-hop `[[wikilink]]` graph expansion.
+- **Live Vault Sync (Read-Only):** Scans on startup and watches your Obsidian folder with `watchdog` (~1.5s debounce) without ever altering your existing vault notes unless you explicitly click *Save Reflection to Vault*.
+- **Zero-CDN Offline Web UI & Fonts:** Bundled dark-theme UI with offline fonts (*Atkinson Hyperlegible*, *Source Code Pro*, *Literata*, *IBM Plex Serif*, or any installed system font) served locally on `http://127.0.0.1:8420`.
 
 ---
 
