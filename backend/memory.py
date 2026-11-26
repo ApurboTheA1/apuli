@@ -747,15 +747,27 @@ async def deep_synthesize_self_profile_stream(
                 for r in digest_rows
             ]
 
-        async def _fold_list(entries: List[str], label: str, target_max_chars: int = 4200) -> List[str]:
-            working = entries
+        async def _fold_list_stream(
+            entries: List[str],
+            label: str,
+            target_max_chars: int = 4200,
+            group_char_cap: int = 8500,
+            max_rounds: int = 3,
+        ) -> AsyncIterator[Dict[str, Any]]:
+            working = [e for e in entries if e and e.strip()]
             round_num = 1
-            while len(working) > 10 or sum(len(x) for x in working) > target_max_chars:
+            while working and round_num <= max_rounds and (
+                len(working) > 10 or sum(len(x) for x in working) > target_max_chars
+            ):
+                if len(working) == 1:
+                    working = [working[0][:target_max_chars]]
+                    break
+
                 groups: List[List[str]] = []
                 cur_g: List[str] = []
                 cur_len = 0
                 for item in working:
-                    if cur_g and (len(cur_g) >= 12 or cur_len + len(item) > 5500):
+                    if cur_g and (len(cur_g) >= 16 or cur_len + len(item) > group_char_cap):
                         groups.append(cur_g)
                         cur_g = []
                         cur_len = 0
@@ -764,21 +776,43 @@ async def deep_synthesize_self_profile_stream(
                 if cur_g:
                     groups.append(cur_g)
 
+                # Guard against 1-item groups failing to shrink `working` (which caused infinite loops)
+                if len(groups) >= len(working):
+                    groups = [working[i : i + 2] for i in range(0, len(working), 2)]
+
                 next_level: List[str] = []
-                for g in groups:
+                total_g = len(groups)
+                for g_idx, g in enumerate(groups, start=1):
+                    yield {
+                        "type": "progress",
+                        "message": (
+                            f"Synthesizing {label} chapters · Round {round_num}, "
+                            f"group {g_idx}/{total_g} ({len(entries)} entries)…"
+                        ),
+                    }
+                    # Cap individual inputs inside huge merge groups to stay well within num_ctx
+                    each_cap = max(600, group_char_cap // max(1, len(g)))
+                    trimmed_g = [item[:each_cap] for item in g]
                     fold_prompt = (
-                        f"Consolidate these chronological {label} insights about {cfg.user_name} into one cohesive chapter summary "
-                        "(6–10 concise bullets preserving specific people, dates, turning points, struggles, and values):\n\n"
-                        + "\n\n---\n\n".join(g)
+                        f"Consolidate these chronological {label} insights about {cfg.user_name} into one cohesive, compact chapter summary "
+                        "(5–8 concise bullets preserving specific people, dates, turning points, struggles, and values; keep under ~1,000 characters):\n\n"
+                        + "\n\n---\n\n".join(trimmed_g)
                     )
-                    folded = await provider_chat_once(
-                        cfg, used_model, [{"role": "user", "content": fold_prompt}], temperature=0.25
+                    folded = await _call_chat_once(
+                        cfg, used_model, fold_prompt, temperature=0.25, num_ctx=int(budget["num_ctx"])
                     )
-                    next_level.append(folded)
+                    next_level.append(folded.strip() or trimmed_g[0][:600])
+
                 working = next_level
                 round_num += 1
-            return working
 
+            # Guarantee bounded output size even if individual rounds ran long
+            if working and sum(len(x) for x in working) > target_max_chars:
+                per_item = max(350, target_max_chars // len(working))
+                working = [x[:per_item] for x in working]
+            yield {"type": "result", "items": working}
+
+        folded_journals: List[str] = []
         if journal_entries:
             yield {
                 "stage": "reducing",
@@ -786,10 +820,23 @@ async def deep_synthesize_self_profile_stream(
                 "total_notes": total_notes,
                 "message": f"Synthesizing journal chapters ({len(journal_entries)} journal entries)…",
             }
-            folded_journals = await _fold_list(journal_entries, "journal & reflection", target_max_chars=4800)
-        else:
-            folded_journals = []
+            async for ev in _fold_list_stream(
+                journal_entries,
+                "journal & reflection",
+                target_max_chars=4800,
+                group_char_cap=max(7500, int(budget["batch_max_chars"])),
+            ):
+                if ev["type"] == "progress":
+                    yield {
+                        "stage": "reducing",
+                        "notes_processed": total_notes,
+                        "total_notes": total_notes,
+                        "message": ev["message"],
+                    }
+                else:
+                    folded_journals = ev["items"]
 
+        folded_others: List[str] = []
         if other_entries:
             yield {
                 "stage": "reducing",
@@ -797,9 +844,21 @@ async def deep_synthesize_self_profile_stream(
                 "total_notes": total_notes,
                 "message": f"Integrating supporting vault context ({len(other_entries)} notes)…",
             }
-            folded_others = await _fold_list(other_entries, "vault", target_max_chars=2600)
-        else:
-            folded_others = []
+            async for ev in _fold_list_stream(
+                other_entries,
+                "vault context",
+                target_max_chars=2600,
+                group_char_cap=max(7500, int(budget["batch_max_chars"])),
+            ):
+                if ev["type"] == "progress":
+                    yield {
+                        "stage": "reducing",
+                        "notes_processed": total_notes,
+                        "total_notes": total_notes,
+                        "message": ev["message"],
+                    }
+                else:
+                    folded_others = ev["items"]
 
         yield {
             "stage": "reducing",

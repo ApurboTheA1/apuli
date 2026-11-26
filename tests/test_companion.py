@@ -734,3 +734,57 @@ def test_network_lan_pin_authentication_and_lockout(tmp_path: Path, monkeypatch)
         assert good_remote.get("/api/status").status_code == 401
 
 
+def test_deep_synthesis_reduce_terminates_on_long_digests(tmp_path: Path, monkeypatch):
+    from backend import memory as memory_mod
+
+    vault = tmp_path / "Vault"
+    (vault / "Journal").mkdir(parents=True)
+    for i in range(18):
+        (vault / "Journal" / f"2024-01-{i+1:02d}.md").write_text(
+            f"# Day {i+1}\nLong personal journal entry about growth, creativity, and reflection number {i+1}.",
+            encoding="utf-8",
+        )
+
+    db_file = tmp_path / "reduce_loop.db"
+    init_db(db_file)
+    cfg = AppConfig(
+        vault_path=str(vault),
+        journal_folders=["Journal"],
+        ollama_url="http://127.0.0.1:59999",
+    )
+    indexer = VaultIndexer(lambda: cfg, db_path=db_file)
+    asyncio.run(indexer.index_vault())
+
+    calls = 0
+
+    async def verbose_chat_once(cfg_arg, model_spec, messages, temperature=0.3, **kwargs):
+        nonlocal calls
+        calls += 1
+        p = messages[0]["content"]
+        if "CORE JOURNAL & PERIODIC REFLECTIONS" in p:
+            assert len(p) < 16000
+            return "### Core Identity & Values\nTerminated cleanly."
+        if "Analyze these" in p:
+            import json as _json
+            return _json.dumps({str(k): "Detailed personal insight " * 30 for k in range(1, 20)})
+        # Intentionally return an oversized summary (>5500 chars) that previously triggered an infinite loop
+        return ("Oversized chapter bullet point about identity and growth.\n" * 120)
+
+    monkeypatch.setattr(memory_mod, "provider_chat_once", verbose_chat_once)
+
+    async def run_deep():
+        events = []
+        async for ev in memory_mod.deep_synthesize_self_profile_stream(cfg, db_path=db_file):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(run_deep())
+    assert events[-1]["stage"] == "done"
+    assert calls < 30
+    assert any(
+        ev["stage"] == "reducing" and "Round " in ev.get("message", "")
+        for ev in events
+    )
+
+
+
